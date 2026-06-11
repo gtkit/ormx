@@ -4,6 +4,12 @@
 
 格式参考 Keep a Changelog，版本遵循语义化版本。
 
+## [v1.0.1] - 2026-06-11
+
+### 变更
+
+- 重写 README：补充根包、zlogger、jetorm 的完整使用说明与全部选项函数表格，新增 jetorm 与 GORM 的使用场景分工指引
+
 ## [v1.0.0] - 2026-06-10
 
 首个版本。代码基线：`github.com/gtkit/orm/v2` v2.3.1（含 commit 1c06e07 的 timer 修复）与 `github.com/gtkit/orm/jetorm`（v1.3.2）。
