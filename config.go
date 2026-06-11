@@ -30,10 +30,7 @@ const (
 	defaultStartupPingRetryMax = 5 * time.Second
 )
 
-var (
-	errNilSQLDB       = errors.New("ormx: nil *sql.DB")
-	errAddressInvalid = dsn.ErrAddressRequired
-)
+var errNilSQLDB = errors.New("ormx: nil *sql.DB")
 
 type Config struct {
 	Name                     string
@@ -412,8 +409,4 @@ func normalizeContext(ctx context.Context) context.Context {
 
 func cloneStringMap(src map[string]string) map[string]string {
 	return maps.Clone(src)
-}
-
-func (c MySQLConfig) address() (string, error) {
-	return c.params().Address()
 }

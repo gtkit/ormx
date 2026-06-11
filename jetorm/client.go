@@ -26,9 +26,9 @@ func Open(ctx context.Context, opts ...Option) (*Client, error) {
 	pingCtx, cancel := normalizeContext(ctx, cfg.QueryTimeout)
 	defer cancel()
 
-	if err := db.PingContext(pingCtx); err != nil {
+	if pingErr := db.PingContext(pingCtx); pingErr != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, pingErr
 	}
 
 	return &Client{

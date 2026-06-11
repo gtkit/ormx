@@ -15,8 +15,6 @@ const (
 	defaultMaxRetries    = 3
 	defaultRetryBaseWait = 5 * time.Millisecond
 	defaultRetryMaxWait  = 50 * time.Millisecond
-	mysqlErrDeadlock     = 1213
-	mysqlErrLockWait     = 1205
 )
 
 var errNilTxFunc = errors.New("ormx: nil transaction function")

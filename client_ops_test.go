@@ -10,6 +10,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// mysqlErrDeadlock 是 MySQL 死锁错误码（1213），用于构造可重试错误的测试桩。
+const mysqlErrDeadlock = 1213
+
 func TestClientWithTxCommitAndRollback(t *testing.T) {
 	sqlDB, state := newStubDB()
 	defer sqlDB.Close()

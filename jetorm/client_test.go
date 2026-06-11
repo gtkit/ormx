@@ -78,11 +78,11 @@ func TestOpenWithDBAppliesPoolOptions(t *testing.T) {
 	if stats.MaxOpenConnections != 12 {
 		t.Fatalf("expected MaxOpenConnections 12, got %d", stats.MaxOpenConnections)
 	}
-	if err := client.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if closeErr := client.Close(); closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
 	}
-	if err := db.PingContext(context.Background()); err != nil {
-		t.Fatalf("expected wrapped db to remain open, got %v", err)
+	if pingErr := db.PingContext(context.Background()); pingErr != nil {
+		t.Fatalf("expected wrapped db to remain open, got %v", pingErr)
 	}
 }
 
@@ -104,10 +104,10 @@ func TestOpenPingsAndOwnsSQLDB(t *testing.T) {
 	if behavior.pingCount != 1 {
 		t.Fatalf("expected ping during Open, got %d", behavior.pingCount)
 	}
-	if err := client.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if closeErr := client.Close(); closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
 	}
-	if err := client.DB().PingContext(context.Background()); err == nil {
+	if pingErr := client.DB().PingContext(context.Background()); pingErr == nil {
 		t.Fatal("expected owned db to be closed")
 	}
 }
@@ -122,8 +122,8 @@ func TestClientExecContextUsesConfiguredTimeoutWhenMissingDeadline(t *testing.T)
 		t.Fatalf("OpenWithDB: %v", err)
 	}
 
-	if _, err := client.ExecContext(nil, jetmysql.RawStatement("UPDATE demo SET n = 1")); err != nil {
-		t.Fatalf("ExecContext: %v", err)
+	if _, execErr := client.ExecContext(nil, jetmysql.RawStatement("UPDATE demo SET n = 1")); execErr != nil { //nolint:staticcheck // 故意传 nil ctx，验证 normalizeContext 的兜底
+		t.Fatalf("ExecContext: %v", execErr)
 	}
 	if !behavior.execSawDeadline {
 		t.Fatal("expected ExecContext to apply query timeout")
@@ -176,8 +176,8 @@ func TestClientRowsReturnsJetRows(t *testing.T) {
 	var dest struct {
 		ID int64
 	}
-	if err := rows.Scan(&dest); err != nil {
-		t.Fatalf("Scan: %v", err)
+	if scanErr := rows.Scan(&dest); scanErr != nil {
+		t.Fatalf("Scan: %v", scanErr)
 	}
 	if dest.ID != 1 {
 		t.Fatalf("expected scanned row id 1, got %d", dest.ID)
@@ -195,8 +195,8 @@ func TestWithTxCommitsOnSuccess(t *testing.T) {
 	}
 
 	err = client.WithTx(context.Background(), nil, func(tx *Tx) error {
-		_, err := tx.ExecContext(context.Background(), jetmysql.RawStatement("UPDATE demo SET n = 1"))
-		return err
+		_, execErr := tx.ExecContext(context.Background(), jetmysql.RawStatement("UPDATE demo SET n = 1"))
+		return execErr
 	})
 	if err != nil {
 		t.Fatalf("WithTx: %v", err)
@@ -262,9 +262,9 @@ func TestWithTxRollsBackOnPanic(t *testing.T) {
 	}()
 
 	_ = client.WithTx(context.Background(), nil, func(tx *Tx) error {
-		_, err := tx.ExecContext(context.Background(), jetmysql.RawStatement("UPDATE demo SET n = 1"))
-		if err != nil {
-			t.Fatalf("ExecContext: %v", err)
+		_, execErr := tx.ExecContext(context.Background(), jetmysql.RawStatement("UPDATE demo SET n = 1"))
+		if execErr != nil {
+			t.Fatalf("ExecContext: %v", execErr)
 		}
 		panic("panic-value")
 	})
