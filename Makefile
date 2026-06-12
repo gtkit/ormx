@@ -28,10 +28,19 @@ tag:
 	newpatch=$$(expr $$patch + 1); \
 	new="v$$maj.$$min.$$newpatch"; \
 	printf "Bump: v%s → %s\n" "$$current" "$$new"; \
+	if ! grep -q "^## \\[$$new\\]" CHANGELOG.md; then echo "❌ CHANGELOG.md 缺少 $$new 条目"; exit 1; fi; \
+	go vet ./...; \
+	golangci-lint run ./...; \
+	go test -race -count=1 -timeout=5m ./...; \
+	go test -coverprofile=coverage.out ./...; \
+	total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/, "", $$3); print $$3}'); \
+	rm -f coverage.out; \
+	awk -v t="$$total" 'BEGIN { exit (t + 0 >= 80) ? 0 : 1 }' || { echo "❌ coverage $$total% 低于 80%"; exit 1; }; \
+	govulncheck ./...; \
 	sed -E -i.bak 's/(const Version = ")([^"]+)(")/\1'"$$new"'\3/' version.go && rm -f version.go.bak; \
 	git add version.go; \
 	git commit -m "chore(release): $$new"; \
-	git tag -a "$$new" -m "release $$new"; \
+	git tag -a "$$new" -m "$$(printf '版本 %s\n\n主要变更：\n- chore: 发布 %s\n\n破坏性变更（如有）：\n- 无\n' "$$new" "$$new")"; \
 	git push gtkit HEAD; \
 	git push gtkit "$$new"; \
 	printf "✅ released: %s\n" "$$new"
