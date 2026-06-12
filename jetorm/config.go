@@ -15,7 +15,9 @@ import (
 const defaultDriver = "mysql"
 
 var (
-	ErrNilDB     = errors.New("jetorm: db is required")
+	// ErrNilDB 表示 OpenWithDB 收到 nil 的 *sql.DB。
+	ErrNilDB = errors.New("jetorm: db is required")
+	// ErrNilTxFunc 表示 WithTx 收到 nil 的事务函数。
 	ErrNilTxFunc = errors.New("jetorm: tx func is required")
 	openDBFn     = openDB
 )
@@ -47,6 +49,7 @@ type Config struct {
 	TxRetryMaxWait  time.Duration
 }
 
+// Option 用于在 NewConfig / Open 中按 Functional Options 方式定制 Config。
 type Option interface {
 	apply(*Config)
 }
@@ -57,6 +60,8 @@ func (f optionFunc) apply(cfg *Config) {
 	f(cfg)
 }
 
+// NewConfig 以内置默认值（mysql 驱动、127.0.0.1:3306、本地时区及默认连接池参数）
+// 构建 Config，再依次应用 opts；nil Option 会被跳过。
 func NewConfig(opts ...Option) Config {
 	cfg := Config{
 		Driver:          defaultDriver,
@@ -80,12 +85,15 @@ func NewConfig(opts ...Option) Config {
 	return cfg
 }
 
+// Clone 返回 Config 的深拷贝（Params map 一并复制），修改副本不影响原值。
 func (c Config) Clone() Config {
 	clone := c
 	clone.Params = maps.Clone(c.Params)
 	return clone
 }
 
+// DSN 按当前配置生成 MySQL 连接串（含明文密码），配置非法时返回空字符串。
+// 日志场景请改用 RedactedDSN。
 func (c Config) DSN() string {
 	cfg, err := c.params().DriverConfig()
 	if err != nil {
@@ -94,6 +102,7 @@ func (c Config) DSN() string {
 	return cfg.FormatDSN()
 }
 
+// RedactedDSN 与 DSN 相同，但把非空密码脱敏为 ******，可安全用于日志输出。
 func (c Config) RedactedDSN() string {
 	cfg, err := c.params().DriverConfig()
 	if err != nil {
@@ -154,22 +163,27 @@ func ensureContext(ctx context.Context) context.Context {
 	return ctx
 }
 
+// WithHost 设置数据库主机地址（默认 127.0.0.1）。
 func WithHost(host string) Option {
 	return optionFunc(func(cfg *Config) { cfg.Host = host })
 }
 
+// WithPort 设置数据库端口（默认 3306）。
 func WithPort(port string) Option {
 	return optionFunc(func(cfg *Config) { cfg.Port = port })
 }
 
+// WithDatabase 设置目标数据库名。
 func WithDatabase(name string) Option {
 	return optionFunc(func(cfg *Config) { cfg.Database = name })
 }
 
+// WithUser 设置连接用户名。
 func WithUser(user string) Option {
 	return optionFunc(func(cfg *Config) { cfg.User = user })
 }
 
+// WithPassword 设置连接密码。
 func WithPassword(password string) Option {
 	return optionFunc(func(cfg *Config) { cfg.Password = password })
 }
@@ -196,34 +210,43 @@ func WithLoc(loc *time.Location) Option {
 	})
 }
 
+// WithDialTimeout 设置建立连接的超时时间。
 func WithDialTimeout(d time.Duration) Option {
 	return optionFunc(func(cfg *Config) { cfg.DialTimeout = d })
 }
 
+// WithReadTimeout 设置 I/O 读超时时间。
 func WithReadTimeout(d time.Duration) Option {
 	return optionFunc(func(cfg *Config) { cfg.ReadTimeout = d })
 }
 
+// WithWriteTimeout 设置 I/O 写超时时间。
 func WithWriteTimeout(d time.Duration) Option {
 	return optionFunc(func(cfg *Config) { cfg.WriteTimeout = d })
 }
 
+// WithMaxOpenConns 设置连接池最大打开连接数。
 func WithMaxOpenConns(n int) Option {
 	return optionFunc(func(cfg *Config) { cfg.MaxOpenConns = n })
 }
 
+// WithMaxIdleConns 设置连接池最大空闲连接数。
 func WithMaxIdleConns(n int) Option {
 	return optionFunc(func(cfg *Config) { cfg.MaxIdleConns = n })
 }
 
+// WithConnMaxLifetime 设置连接的最长存活时间。
 func WithConnMaxLifetime(d time.Duration) Option {
 	return optionFunc(func(cfg *Config) { cfg.ConnMaxLifetime = d })
 }
 
+// WithConnMaxIdleTime 设置连接的最长空闲时间。
 func WithConnMaxIdleTime(d time.Duration) Option {
 	return optionFunc(func(cfg *Config) { cfg.ConnMaxIdleTime = d })
 }
 
+// WithQueryTimeout 设置单条语句的执行超时；只作用于单条语句，
+// 不限制事务整体时长（事务用 WithTxTimeout）。
 func WithQueryTimeout(d time.Duration) Option {
 	return optionFunc(func(cfg *Config) { cfg.QueryTimeout = d })
 }

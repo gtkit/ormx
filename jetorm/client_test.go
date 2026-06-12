@@ -310,6 +310,8 @@ type testConnBehavior struct {
 	querySawDeadline bool
 	// execErrQueue 中的错误按调用顺序依次返回，耗尽后恢复成功。
 	execErrQueue []error
+	// rollbackErr 非 nil 时，每次 Rollback 都返回该错误。
+	rollbackErr error
 }
 
 type testConnector struct {
@@ -414,7 +416,7 @@ func (t *testTx) Commit() error {
 
 func (t *testTx) Rollback() error {
 	t.behavior.rollbackCount++
-	return nil
+	return t.behavior.rollbackErr
 }
 
 type testRows struct {

@@ -16,6 +16,8 @@ const (
 	defaultTxRetryMaxWait  = 50 * time.Millisecond
 )
 
+// Tx 包装 *sql.Tx，在事务内提供与 Client 一致的语句执行方法。
+// 由 WithTx 创建并管理提交/回滚，调用方只在事务函数内使用，不可跨事务保留。
 type Tx struct {
 	tx     *sql.Tx
 	config Config
@@ -86,7 +88,7 @@ func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(*Tx) e
 			panic(recovered)
 		}
 		if err != nil {
-			_ = sqlTx.Rollback()
+			err = errors.Join(err, rollbackError(sqlTx))
 			return
 		}
 		err = sqlTx.Commit()
@@ -96,6 +98,18 @@ func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(*Tx) e
 	return err
 }
 
+// rollbackError 执行回滚并过滤 sql.ErrTxDone：事务已因 context 取消/超时
+// 被驱动终止时，回滚返回 ErrTxDone 属正常竞态，不计为回滚失败。
+func rollbackError(tx *sql.Tx) error {
+	err := tx.Rollback()
+	if errors.Is(err, sql.ErrTxDone) {
+		return nil
+	}
+	return err
+}
+
+// ExecContext 在事务内执行写语句并返回 sql.Result，
+// 单条语句受 QueryTimeout 约束（ctx 已带 deadline 时不叠加）。
 func (t *Tx) ExecContext(ctx context.Context, stmt jetmysql.Statement) (sql.Result, error) {
 	queryCtx, cancel := normalizeContext(ctx, t.config.QueryTimeout)
 	defer cancel()
@@ -103,6 +117,8 @@ func (t *Tx) ExecContext(ctx context.Context, stmt jetmysql.Statement) (sql.Resu
 	return stmt.ExecContext(queryCtx, t.tx)
 }
 
+// QueryContext 在事务内执行查询并把结果扫描进 dest，
+// 单条语句受 QueryTimeout 约束（ctx 已带 deadline 时不叠加）。
 func (t *Tx) QueryContext(ctx context.Context, stmt jetmysql.Statement, dest any) error {
 	queryCtx, cancel := normalizeContext(ctx, t.config.QueryTimeout)
 	defer cancel()
@@ -110,6 +126,8 @@ func (t *Tx) QueryContext(ctx context.Context, stmt jetmysql.Statement, dest any
 	return stmt.QueryContext(queryCtx, t.tx, dest)
 }
 
+// Rows 在事务内执行查询并返回流式结果集，调用方负责关闭返回的 Rows。
+// 单条语句受 QueryTimeout 约束（ctx 已带 deadline 时不叠加）。
 func (t *Tx) Rows(ctx context.Context, stmt jetmysql.Statement) (*jetmysql.Rows, error) {
 	queryCtx, cancel := normalizeContext(ctx, t.config.QueryTimeout)
 	defer cancel()

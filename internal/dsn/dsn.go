@@ -104,11 +104,12 @@ func IsDeadlock(err error) bool {
 // 公式：min(baseWait * 2^attempt + jitter, maxWait)，抖动最多 50%。
 func RetryBackoff(attempt int, baseWait, maxWait time.Duration) time.Duration {
 	wait := baseWait << attempt // baseWait * 2^attempt
-	const jitterDivisor = 2
-	jitter := time.Duration(rand.Int64N(int64(wait/jitterDivisor) + 1)) //nolint:gosec // jitter for backoff, not security
-	wait += jitter
-	if wait > maxWait {
+	// attempt 极大时左移溢出会回绕成负数或 0，与已达上限一样直接返回 maxWait，
+	// 避免 rand.Int64N 收到非正参数 panic。
+	if wait <= 0 || wait >= maxWait {
 		return maxWait
 	}
-	return wait
+	const jitterDivisor = 2
+	jitter := time.Duration(rand.Int64N(int64(wait/jitterDivisor) + 1)) //nolint:gosec // jitter for backoff, not security
+	return min(wait+jitter, maxWait)
 }

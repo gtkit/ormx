@@ -8,8 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 var (
@@ -24,6 +22,7 @@ var (
 	errHealthLoopInterval = errors.New("ormx: health loop interval must be greater than zero")
 )
 
+// ClusterOption 用于在构建 Cluster 时定制集群行为的函数式选项。
 type ClusterOption func(*clusterOptions)
 
 type clusterOptions struct {
@@ -32,6 +31,9 @@ type clusterOptions struct {
 	healthCheckTimeout    time.Duration
 }
 
+// Cluster 管理一主多副本的数据库节点拓扑，提供读写分离路由、
+// 健康检查、副本摘除/恢复与主库切换能力。
+// 所有方法并发安全（内部由 RWMutex 保护）。
 type Cluster struct {
 	mu          sync.RWMutex
 	primary     *managedNode
@@ -51,6 +53,8 @@ type managedNode struct {
 	updatedAt time.Time
 }
 
+// Node 是集群节点在某一时刻的不可变快照，
+// 包含节点名称、角色、客户端、状态、最近错误及状态更新时间。
 type Node struct {
 	name      string
 	role      NodeRole
@@ -60,6 +64,8 @@ type Node struct {
 	updatedAt time.Time
 }
 
+// ClusterHealthReport 描述一次集群健康检查的整体结果，
+// 包含集群级状态、检查时间和各节点的健康报告。
 type ClusterHealthReport struct {
 	Status    HealthStatus
 	CheckedAt time.Time
@@ -68,10 +74,13 @@ type ClusterHealthReport struct {
 
 const metricSampleCountPerNode = 10
 
+// Healthy 报告集群整体状态是否为 HealthStatusUp。
 func (r ClusterHealthReport) Healthy() bool {
 	return r.Status == HealthStatusUp
 }
 
+// OpenCluster 按给定配置打开主库与各副本连接，并构建 Cluster。
+// 等价于使用默认选项调用 OpenClusterWithOptions。
 func OpenCluster(
 	ctx context.Context,
 	primary Config,
@@ -80,6 +89,8 @@ func OpenCluster(
 	return OpenClusterWithOptions(ctx, primary, replicas)
 }
 
+// OpenClusterWithOptions 按给定配置打开主库连接，并行打开所有副本连接，
+// 再按选项构建 Cluster。任一连接打开失败时会关闭已打开的连接并返回错误。
 func OpenClusterWithOptions(
 	ctx context.Context,
 	primary Config,
@@ -133,10 +144,14 @@ func OpenClusterWithOptions(
 	return NewClusterWithOptions(primaryClient, replicaClients, opts...)
 }
 
+// NewCluster 用已有的主库与副本客户端构建 Cluster。
+// 等价于使用默认选项调用 NewClusterWithOptions。
 func NewCluster(primary *Client, replicas ...*Client) (*Cluster, error) {
 	return NewClusterWithOptions(primary, replicas)
 }
 
+// NewClusterWithOptions 用已有客户端与选项构建 Cluster。
+// primary 不能为 nil；副本不能为 nil 且节点名不能重复，否则返回错误。
 func NewClusterWithOptions(primary *Client, replicas []*Client, opts ...ClusterOption) (*Cluster, error) {
 	if primary == nil {
 		return nil, errNilPrimaryClient
@@ -175,12 +190,16 @@ func NewClusterWithOptions(primary *Client, replicas []*Client, opts ...ClusterO
 	return cluster, nil
 }
 
+// WithReadFallbackToPrimary 设置当没有可用副本时读请求是否回退到主库。
+// 默认开启。
 func WithReadFallbackToPrimary(enabled bool) ClusterOption {
 	return func(options *clusterOptions) {
 		options.readFallbackToPrimary = enabled
 	}
 }
 
+// WithAutoRecoverReplicas 设置 Refresh 探活成功时是否自动把 down 状态的副本恢复为 ready。
+// 默认开启。
 func WithAutoRecoverReplicas(enabled bool) ClusterOption {
 	return func(options *clusterOptions) {
 		options.autoRecoverReplicas = enabled
@@ -198,6 +217,7 @@ func WithHealthCheckTimeout(timeout time.Duration) ClusterOption {
 	}
 }
 
+// Primary 返回当前主库客户端；主库不存在时返回 nil。
 func (c *Cluster) Primary() *Client {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -207,6 +227,7 @@ func (c *Cluster) Primary() *Client {
 	return c.primary.client
 }
 
+// PrimaryNode 返回当前主库节点的快照；主库不存在时返回零值 Node。
 func (c *Cluster) PrimaryNode() Node {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -216,12 +237,14 @@ func (c *Cluster) PrimaryNode() Node {
 	return c.primary.snapshot()
 }
 
+// ReplicaNodes 返回所有副本节点的快照。
 func (c *Cluster) ReplicaNodes() []Node {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return snapshots(c.replicas)
 }
 
+// Nodes 返回主库与所有副本节点的快照，主库（若存在）排在首位。
 func (c *Cluster) Nodes() []Node {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -233,420 +256,8 @@ func (c *Cluster) Nodes() []Node {
 	return nodes
 }
 
-func (c *Cluster) Reader() *Client {
-	client, _ := c.ReaderClient()
-	return client
-}
-
-func (c *Cluster) ReaderClient() (*Client, error) {
-	return c.readerClient(false)
-}
-
-// ReaderClientCtx returns a read client, respecting the write flag in ctx.
-// If [ContextWithWriteFlag] was called on ctx, reads are routed to the
-// primary to guarantee read-after-write consistency.
-func (c *Cluster) ReaderClientCtx(ctx context.Context) (*Client, error) {
-	return c.readerClient(HasWriteFlag(ctx))
-}
-
-func (c *Cluster) readerClient(forcePrimary bool) (*Client, error) {
-	c.mu.RLock()
-	if c.closed {
-		c.mu.RUnlock()
-		return nil, errClusterClosed
-	}
-
-	// Fast path: write flag set — route to primary for read-after-write consistency.
-	if forcePrimary {
-		if c.primary == nil || c.primary.state != NodeStateReady {
-			c.mu.RUnlock()
-			return nil, errPrimaryUnavailable
-		}
-		client := c.primary.client
-		c.mu.RUnlock()
-		return client, nil
-	}
-
-	candidates := c.readyReplicasLocked()
-	readFallback := c.options.readFallbackToPrimary
-	// Capture primary state inside lock to avoid data race.
-	var primaryClient *Client
-	if readFallback && c.primary != nil && c.primary.state == NodeStateReady {
-		primaryClient = c.primary.client
-	}
-	c.mu.RUnlock()
-
-	if len(candidates) > 0 {
-		idx := c.readerIndex.Add(1) - 1
-		return candidates[idx%uint64(len(candidates))].client, nil
-	}
-	if primaryClient != nil {
-		return primaryClient, nil
-	}
-	return nil, errNoReadableNode
-}
-
-func (c *Cluster) WriteClient() (*Client, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.closed {
-		return nil, errClusterClosed
-	}
-	if c.primary == nil || c.primary.state == NodeStateDown {
-		return nil, errPrimaryUnavailable
-	}
-	return c.primary.client, nil
-}
-
-// WriteDB returns the primary *gorm.DB for write operations.
-//
-// Deprecated: Use WriteClient() instead to handle errors explicitly.
-// This method returns nil when the primary is unavailable, which may
-// cause nil-pointer panics if the caller does not check.
-func (c *Cluster) WriteDB() *gorm.DB {
-	client, _ := c.WriteClient()
-	if client == nil {
-		return nil
-	}
-	return client.DB()
-}
-
-// ReadDB returns a replica *gorm.DB for read operations.
-//
-// Deprecated: Use ReaderClient() instead to handle errors explicitly.
-// This method returns nil when no readable node is available, which may
-// cause nil-pointer panics if the caller does not check.
-func (c *Cluster) ReadDB() *gorm.DB {
-	client, _ := c.ReaderClient()
-	if client == nil {
-		return nil
-	}
-	return client.DB()
-}
-
-// ReadDBCtx returns a *gorm.DB for reads, routing to primary when ctx
-// carries a write flag set by [ContextWithWriteFlag].
-//
-// Deprecated: Use ReaderClientCtx() instead to handle errors explicitly.
-func (c *Cluster) ReadDBCtx(ctx context.Context) *gorm.DB {
-	client, _ := c.ReaderClientCtx(ctx)
-	if client == nil {
-		return nil
-	}
-	return client.DB()
-}
-
-// MustWriteDB returns the primary *gorm.DB or panics if unavailable.
-// Use only when a nil-pointer panic is acceptable (e.g. startup wiring).
-func (c *Cluster) MustWriteDB() *gorm.DB {
-	client, err := c.WriteClient()
-	if err != nil {
-		panic(err)
-	}
-	return client.DB()
-}
-
-// MustReadDB returns a replica *gorm.DB or panics if unavailable.
-// Use only when a nil-pointer panic is acceptable (e.g. startup wiring).
-func (c *Cluster) MustReadDB() *gorm.DB {
-	client, err := c.ReaderClient()
-	if err != nil {
-		panic(err)
-	}
-	return client.DB()
-}
-
-func (c *Cluster) WithTx(ctx context.Context, fn func(tx *gorm.DB) error, txOpts ...TxOption) error {
-	client, err := c.WriteClient()
-	if err != nil {
-		return err
-	}
-	return client.WithTx(ctx, nil, fn, txOpts...)
-}
-
-func (c *Cluster) WithReadTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
-	client, err := c.ReaderClientCtx(ctx)
-	if err != nil {
-		return err
-	}
-	return client.WithReadTx(ctx, fn)
-}
-
-func (c *Cluster) HealthCheck(ctx context.Context) ClusterHealthReport {
-	checkedAt := time.Now()
-	ctx, cancel := c.healthCtx(ctx)
-	defer cancel()
-	nodes := c.Nodes()
-	reports := probeNodes(ctx, nodes)
-	return buildClusterReport(checkedAt, reports)
-}
-
-func (c *Cluster) Refresh(ctx context.Context) ClusterHealthReport {
-	checkedAt := time.Now()
-	ctx, cancel := c.healthCtx(ctx)
-	defer cancel()
-	nodes := c.Nodes()
-	probed := probeNodesByName(ctx, nodes)
-
-	c.mu.Lock()
-	for _, node := range c.allManagedNodesLocked() {
-		report, ok := probed[node.name]
-		if !ok {
-			continue
-		}
-
-		switch {
-		case report.Error != nil:
-			node.setState(NodeStateDown, report.Error)
-		case node.role == RolePrimary:
-			node.setState(NodeStateReady, nil)
-		case node.state == NodeStateDown && c.options.autoRecoverReplicas:
-			node.setState(NodeStateReady, nil)
-		}
-	}
-
-	finalReports := c.currentReportsLocked(probed)
-	c.mu.Unlock()
-
-	return buildClusterReport(checkedAt, finalReports)
-}
-
-// RunHealthLoop periodically refreshes cluster health until ctx is canceled.
-// Callers should start it in their own goroutine to control shutdown semantics.
-func (c *Cluster) RunHealthLoop(ctx context.Context, interval time.Duration) error {
-	if interval <= 0 {
-		return errHealthLoopInterval
-	}
-
-	ctx = normalizeContext(ctx)
-	if ctx.Err() != nil {
-		return nil
-	}
-
-	c.mu.RLock()
-	closed := c.closed
-	c.mu.RUnlock()
-	if closed {
-		return errClusterClosed
-	}
-
-	c.Refresh(ctx)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			c.mu.RLock()
-			closed = c.closed
-			c.mu.RUnlock()
-			if closed {
-				return errClusterClosed
-			}
-			c.Refresh(ctx)
-		}
-	}
-}
-
-func (c *Cluster) DrainReplica(name string, cause error) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return errClusterClosed
-	}
-
-	replica := c.findReplicaLocked(name)
-	if replica == nil {
-		return errReplicaNotFound
-	}
-	replica.setState(NodeStateDraining, cause)
-	return nil
-}
-
-func (c *Cluster) RecoverReplica(ctx context.Context, name string) error {
-	c.mu.RLock()
-	if c.closed {
-		c.mu.RUnlock()
-		return errClusterClosed
-	}
-	replica := c.findReplicaLocked(name)
-	if replica == nil {
-		c.mu.RUnlock()
-		return errReplicaNotFound
-	}
-	client := replica.client
-	epochBefore := c.epoch
-	c.mu.RUnlock()
-
-	// Ping outside lock.
-	pingErr := client.PingContext(ctx)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return errClusterClosed
-	}
-
-	// Topology changed while pinging — the node may have been promoted or removed.
-	if c.epoch != epochBefore {
-		replica = c.findReplicaLocked(name)
-		if replica == nil {
-			return errReplicaNotFound
-		}
-	}
-
-	if pingErr != nil {
-		replica.setState(NodeStateDown, pingErr)
-		return pingErr
-	}
-
-	replica.setState(NodeStateReady, nil)
-	return nil
-}
-
-// MarkPrimaryDown 将当前主库标记为 down。
-// 注意：如果后续调用 Refresh() 且主库 Ping 恢复成功，状态会自动回到 Ready。
-// 如果你的目标是长期隔离主库，请在运维侧同时停止健康循环或避免继续触发 Refresh()。
-func (c *Cluster) MarkPrimaryDown(cause error) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return errClusterClosed
-	}
-
-	if c.primary == nil {
-		return errPrimaryUnavailable
-	}
-	c.primary.setState(NodeStateDown, cause)
-	return nil
-}
-
-// SwitchPrimary 切换主库节点。
-// 注意：如果后续调用 Refresh() 且主库 Ping 恢复成功，状态会自动回到 Ready。
-// 如果你的目标是长期隔离主库，请在运维侧同时停止健康循环或避免继续触发 Refresh()。
-//
-// 注意：如果目标节点已经是主节点，则只做连通性确认；
-// 如果目标节点是副本节点，则把它提升为主节点。
-func (c *Cluster) SwitchPrimary(ctx context.Context, name string) (Node, error) {
-	c.mu.RLock()
-	if c.closed {
-		c.mu.RUnlock()
-		return Node{}, errClusterClosed
-	}
-
-	// Fast path: requested node is already the primary.
-	if c.primary != nil && c.primary.name == name {
-		c.mu.RUnlock()
-		return c.switchPrimaryPingExisting(ctx, name)
-	}
-
-	// Slow path: promote a replica to primary.
-	return c.switchPrimaryPromote(ctx, name)
-}
-
-// switchPrimaryPingExisting 处理 SwitchPrimary 的快路径：
-// 当目标节点已经是主节点时，只做连通性确认。
-// 调用方进入此函数前不能持有任何锁。
-func (c *Cluster) switchPrimaryPingExisting(ctx context.Context, name string) (Node, error) {
-	c.mu.RLock()
-	client := c.primary.client
-	epochBefore := c.epoch
-	c.mu.RUnlock()
-
-	if err := client.PingContext(ctx); err != nil {
-		c.mu.Lock()
-		if c.closed {
-			c.mu.Unlock()
-			return Node{}, errClusterClosed
-		}
-		if c.epoch == epochBefore && c.primary != nil && c.primary.name == name {
-			c.primary.setState(NodeStateDown, err)
-		}
-		c.mu.Unlock()
-		return Node{}, err
-	}
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.closed {
-		return Node{}, errClusterClosed
-	}
-	if c.primary != nil && c.primary.name == name {
-		return c.primary.snapshot(), nil
-	}
-	return Node{}, errTopologyChanged
-}
-
-// switchPrimaryPromote 处理 SwitchPrimary 的慢路径：
-// 当目标节点还是副本时，需要把它提升为主节点。
-//
-// 注意：调用方进入此函数时必须已经持有 RLock，
-// 且本函数会负责释放这把 RLock。
-// 这里特意保留这种锁交接方式，是为了在锁外执行 Ping，
-// 避免持锁做 I/O；后续维护这段代码时不要忽略这一点。
-func (c *Cluster) switchPrimaryPromote(ctx context.Context, name string) (Node, error) {
-	replica := c.findReplicaLocked(name)
-	if replica == nil {
-		c.mu.RUnlock()
-		return Node{}, errReplicaNotFound
-	}
-	client := replica.client
-	epochBefore := c.epoch
-	c.mu.RUnlock()
-
-	// Ping outside lock to avoid holding the mutex during I/O.
-	if err := client.PingContext(ctx); err != nil {
-		c.mu.Lock()
-		if c.closed {
-			c.mu.Unlock()
-			return Node{}, errClusterClosed
-		}
-		if c.epoch == epochBefore {
-			if r := c.findReplicaLocked(name); r != nil {
-				r.setState(NodeStateDown, err)
-			}
-		}
-		c.mu.Unlock()
-		return Node{}, err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return Node{}, errClusterClosed
-	}
-
-	// Re-check: topology may have changed during ping.
-	if c.epoch != epochBefore {
-		if c.primary != nil && c.primary.name == name {
-			return c.primary.snapshot(), nil
-		}
-		return Node{}, errTopologyChanged
-	}
-
-	replica = c.findReplicaLocked(name)
-	if replica == nil {
-		if c.primary != nil && c.primary.name == name {
-			return c.primary.snapshot(), nil
-		}
-		return Node{}, errReplicaNotFound
-	}
-
-	return c.switchPrimaryLocked(replica, errors.New("primary routing switched")), nil
-}
-
-func (c *Cluster) Metrics() []MetricSample {
-	nodes := c.Nodes()
-	metrics := make([]MetricSample, 0, len(nodes)*metricSampleCountPerNode)
-	for _, node := range nodes {
-		metrics = append(metrics, node.Metrics()...)
-	}
-	return metrics
-}
-
+// Close 关闭集群并释放所有节点的底层连接（同一客户端只关闭一次），
+// 返回各节点关闭错误的合并结果；重复调用返回 errClusterClosed。
 func (c *Cluster) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -676,40 +287,39 @@ func (c *Cluster) Close() error {
 	return errors.Join(errs...)
 }
 
+// Name 返回节点名称。
 func (n Node) Name() string {
 	return n.name
 }
 
+// Role 返回节点角色（主库或副本）。
 func (n Node) Role() NodeRole {
 	return n.role
 }
 
+// Client 返回节点对应的数据库客户端。
 func (n Node) Client() *Client {
 	return n.client
 }
 
+// State 返回快照时刻的节点状态。
 func (n Node) State() NodeState {
 	return n.state
 }
 
+// Healthy 报告快照时刻节点状态是否为 NodeStateReady。
 func (n Node) Healthy() bool {
 	return n.state == NodeStateReady
 }
 
+// LastError 返回节点最近一次记录的错误；无错误时为 nil。
 func (n Node) LastError() error {
 	return n.lastError
 }
 
+// UpdatedAt 返回节点状态最近一次更新的时间。
 func (n Node) UpdatedAt() time.Time {
 	return n.updatedAt
-}
-
-func (n Node) HealthCheck(ctx context.Context) HealthReport {
-	return n.decorateHealthReport(n.client.healthCheck(ctx, n.name, n.role))
-}
-
-func (n Node) Metrics() []MetricSample {
-	return n.client.metrics(n.name, n.role)
 }
 
 func defaultClusterOptions() clusterOptions {
@@ -757,149 +367,6 @@ func (c *Cluster) allManagedNodesLocked() []*managedNode {
 	return nodes
 }
 
-func (c *Cluster) currentReportsLocked(probed map[string]HealthReport) []HealthReport {
-	nodes := make([]Node, 0, 1+len(c.replicas))
-	if c.primary != nil {
-		nodes = append(nodes, c.primary.snapshot())
-	}
-	nodes = append(nodes, snapshots(c.replicas)...)
-
-	reports := make([]HealthReport, 0, len(nodes))
-	for _, node := range nodes {
-		report, ok := probed[node.name]
-		if !ok {
-			report = HealthReport{
-				Name:      node.name,
-				Role:      node.role,
-				State:     node.state,
-				Status:    stateToHealthStatus(node.state), // 按 state 推断初始 Status,
-				CheckedAt: time.Now(),
-				Error:     node.lastError,
-			}
-		}
-		reports = append(reports, node.decorateHealthReport(report))
-	}
-	return reports
-}
-
-func (c *Cluster) readyReplicasLocked() []*managedNode {
-	ready := make([]*managedNode, 0, len(c.replicas))
-	for _, replica := range c.replicas {
-		if replica.state == NodeStateReady {
-			ready = append(ready, replica)
-		}
-	}
-	return ready
-}
-
-func (c *Cluster) findReplicaLocked(name string) *managedNode {
-	for _, replica := range c.replicas {
-		if replica.name == name {
-			return replica
-		}
-	}
-	return nil
-}
-
-func (c *Cluster) switchPrimaryLocked(candidate *managedNode, cause error) Node {
-	oldPrimary := c.primary
-	if oldPrimary != nil {
-		oldPrimary.role = RoleReplica
-		if oldPrimary.state == NodeStateReady {
-			oldPrimary.setState(NodeStateDraining, cause)
-		} else if cause != nil {
-			oldPrimary.setState(oldPrimary.state, errors.Join(oldPrimary.lastError, cause))
-		}
-	}
-
-	candidate.role = RolePrimary
-	candidate.setState(NodeStateReady, nil)
-	c.removeReplicaLocked(candidate.name)
-	c.primary = candidate
-
-	if oldPrimary != nil {
-		c.replicas = append(c.replicas, oldPrimary)
-	}
-
-	c.epoch++ // Topology changed — invalidate in-flight TOCTOU checks.
-	return candidate.snapshot()
-}
-
-func (c *Cluster) removeReplicaLocked(name string) {
-	for i, replica := range c.replicas {
-		if replica.name != name {
-			continue
-		}
-		c.replicas = append(c.replicas[:i], c.replicas[i+1:]...)
-		return
-	}
-}
-
-func (n Node) decorateHealthReport(report HealthReport) HealthReport {
-	report.Name = n.name
-	report.Role = n.role
-	report.State = n.state
-
-	switch n.state {
-	case NodeStateReady:
-	case NodeStateDraining:
-		if report.Status == HealthStatusUp {
-			report.Status = HealthStatusDegraded
-		}
-		if report.Error == nil {
-			report.Error = n.lastError
-		}
-	case NodeStateDown:
-		report.Status = HealthStatusDown
-		if report.Error == nil {
-			report.Error = n.lastError
-		}
-	}
-
-	return report
-}
-
-func probeNodes(ctx context.Context, nodes []Node) []HealthReport {
-	probed := make([]HealthReport, len(nodes))
-	var wg sync.WaitGroup
-	for i := range nodes {
-		wg.Go(func() {
-			probed[i] = nodes[i].HealthCheck(ctx)
-		})
-	}
-	wg.Wait()
-	return probed
-}
-
-func probeNodesByName(ctx context.Context, nodes []Node) map[string]HealthReport {
-	reports := probeNodes(ctx, nodes)
-	indexed := make(map[string]HealthReport, len(reports))
-	for _, report := range reports {
-		indexed[report.Name] = report
-	}
-	return indexed
-}
-
-func buildClusterReport(checkedAt time.Time, reports []HealthReport) ClusterHealthReport {
-	report := ClusterHealthReport{
-		Status:    HealthStatusUp,
-		CheckedAt: checkedAt,
-		Nodes:     reports,
-	}
-
-	for _, node := range reports {
-		if node.Role == RolePrimary && node.Status != HealthStatusUp {
-			report.Status = HealthStatusDown
-			return report
-		}
-		if node.Status != HealthStatusUp {
-			report.Status = HealthStatusDegraded
-		}
-	}
-
-	return report
-}
-
 func snapshots(nodes []*managedNode) []Node {
 	snapshotNodes := make([]Node, len(nodes))
 	for i, node := range nodes {
@@ -910,36 +377,4 @@ func snapshots(nodes []*managedNode) []Node {
 
 func replicaName(index int) string {
 	return "replica-" + strconv.Itoa(index+1)
-}
-
-// healthCtx applies the cluster's configured health check timeout if the
-// caller's context does not already carry a shorter deadline.
-// The returned cancel function must be called when the context is no longer needed.
-func (c *Cluster) healthCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	c.mu.RLock()
-	timeout := c.options.healthCheckTimeout
-	c.mu.RUnlock()
-
-	ctx = normalizeContext(ctx)
-
-	if timeout <= 0 {
-		return ctx, func() {}
-	}
-	if _, ok := ctx.Deadline(); ok {
-		return ctx, func() {} // caller already set a deadline
-	}
-	return context.WithTimeout(ctx, timeout)
-}
-
-func stateToHealthStatus(state NodeState) HealthStatus {
-	switch state {
-	case NodeStateReady:
-		return HealthStatusUp
-	case NodeStateDraining:
-		return HealthStatusDegraded
-	case NodeStateDown:
-		return HealthStatusDown
-	default:
-		return HealthStatusDown
-	}
 }

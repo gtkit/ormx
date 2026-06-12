@@ -143,6 +143,82 @@ func TestWithTxRetrySkipsNonDeadlockError(t *testing.T) {
 	}
 }
 
+// fn 出错且回滚失败时，两个错误都必须传播给调用方。
+func TestWithTxJoinsRollbackError(t *testing.T) {
+	fnErr := errors.New("fn failed")
+	rollbackErr := errors.New("rollback failed")
+	behavior := &testConnBehavior{rollbackErr: rollbackErr}
+	db := sql.OpenDB(newTestConnector(behavior))
+	t.Cleanup(func() { _ = db.Close() })
+
+	client, err := OpenWithDB(db, NewConfig())
+	if err != nil {
+		t.Fatalf("OpenWithDB: %v", err)
+	}
+
+	err = client.WithTx(context.Background(), nil, func(_ *Tx) error {
+		return fnErr
+	})
+	if !errors.Is(err, fnErr) {
+		t.Fatalf("expected fn error preserved, got %v", err)
+	}
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("expected rollback error joined, got %v", err)
+	}
+}
+
+// 回滚返回 sql.ErrTxDone（事务已被终止）属正常竞态，不应污染返回错误。
+func TestWithTxIgnoresTxDoneOnRollback(t *testing.T) {
+	fnErr := errors.New("fn failed")
+	behavior := &testConnBehavior{}
+	db := sql.OpenDB(newTestConnector(behavior))
+	t.Cleanup(func() { _ = db.Close() })
+
+	client, err := OpenWithDB(db, NewConfig(WithTxTimeout(40*time.Millisecond)))
+	if err != nil {
+		t.Fatalf("OpenWithDB: %v", err)
+	}
+
+	err = client.WithTx(context.Background(), nil, func(_ *Tx) error {
+		time.Sleep(150 * time.Millisecond) // 等待 TxTimeout 触发驱动层自动回滚
+		return fnErr
+	})
+	if !errors.Is(err, fnErr) {
+		t.Fatalf("expected fn error preserved, got %v", err)
+	}
+	if errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("expected sql.ErrTxDone to be filtered, got %v", err)
+	}
+}
+
+// 回滚失败被 Join 后，死锁判定与重试不受影响。
+func TestWithTxRetriesDeadlockDespiteRollbackError(t *testing.T) {
+	behavior := &testConnBehavior{
+		execErrQueue: []error{&mysqldriver.MySQLError{Number: 1213, Message: "Deadlock found"}},
+		rollbackErr:  errors.New("rollback failed"),
+	}
+	db := sql.OpenDB(newTestConnector(behavior))
+	t.Cleanup(func() { _ = db.Close() })
+
+	client, err := OpenWithDB(db, NewConfig(WithTxRetry(2, 0, 0)))
+	if err != nil {
+		t.Fatalf("OpenWithDB: %v", err)
+	}
+
+	attempts := 0
+	err = client.WithTx(context.Background(), nil, func(tx *Tx) error {
+		attempts++
+		_, execErr := tx.ExecContext(context.Background(), jetmysql.RawStatement("UPDATE demo SET n = 1"))
+		return execErr
+	})
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected tx func executed twice, got %d", attempts)
+	}
+}
+
 func TestWithDSNParamAndTimeoutOverrides(t *testing.T) {
 	cfg := NewConfig(
 		WithDatabase("app"),

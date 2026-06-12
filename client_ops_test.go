@@ -233,6 +233,63 @@ func TestWithTxRetriesOnDeadlock(t *testing.T) {
 	}
 }
 
+// nil ctx 必须能安全走完死锁重试的退避等待路径（等价于 context.Background()）。
+func TestWithTxNilContextSurvivesDeadlockRetry(t *testing.T) {
+	mysqlDeadlock := &mysqldriver.MySQLError{Number: mysqlErrDeadlock, Message: "Deadlock found"}
+
+	sqlDB, state := newStubDB()
+	state.commitErrOnce = mysqlDeadlock
+	defer sqlDB.Close()
+
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithName("nil-ctx-test"), WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+
+	callCount := 0
+	txErr := client.WithTx(nil, nil, func(_ *gorm.DB) error { //nolint:staticcheck // 故意传 nil ctx，验证重试路径的兜底
+		callCount++
+		return nil
+	})
+	if txErr != nil {
+		t.Fatalf("WithTx(nil ctx) expected success after retry, got %v", txErr)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected fn called 2 times, got %d", callCount)
+	}
+}
+
+// nil ctx + observer：observer 必须收到非 nil 的 ctx。
+func TestWithTxNilContextObserverGetsNonNilContext(t *testing.T) {
+	mysqlDeadlock := &mysqldriver.MySQLError{Number: mysqlErrDeadlock, Message: "Deadlock found"}
+
+	sqlDB, state := newStubDB()
+	state.commitErrOnce = mysqlDeadlock
+	defer sqlDB.Close()
+
+	var observedCtx context.Context
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithName("nil-ctx-observer"),
+		WithStartupPing(false),
+		WithSkipInitializeWithVersion(true),
+		WithTxRetryObserver(func(ctx context.Context, _ TxRetryEvent) {
+			observedCtx = ctx
+		}),
+	)
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+
+	txErr := client.WithTx(nil, nil, func(_ *gorm.DB) error { return nil }) //nolint:staticcheck // 故意传 nil ctx
+	if txErr != nil {
+		t.Fatalf("WithTx(nil ctx) error = %v", txErr)
+	}
+	if observedCtx == nil {
+		t.Fatal("expected observer to receive non-nil ctx")
+	}
+}
+
 func TestWithTxReportsRetryEvent(t *testing.T) {
 	mysqlDeadlock := &mysqldriver.MySQLError{Number: mysqlErrDeadlock, Message: "Deadlock found"}
 

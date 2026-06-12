@@ -19,6 +19,7 @@ const (
 
 var errNilTxFunc = errors.New("ormx: nil transaction function")
 
+// TxRetryEvent 描述一次事务死锁重试事件。
 type TxRetryEvent struct {
 	ClientName string
 	Attempt    int
@@ -27,6 +28,7 @@ type TxRetryEvent struct {
 	Err        error
 }
 
+// TxRetryObserver 在每次事务重试等待前被调用，用于观测重试事件（如记录日志、上报指标）。
 type TxRetryObserver func(ctx context.Context, event TxRetryEvent)
 
 // TxOption 配置事务重试行为。
@@ -76,12 +78,18 @@ func WithRetryMaxWait(d time.Duration) TxOption {
 	}
 }
 
+// WithTx 在事务中执行 fn：fn 返回 nil 则提交，返回 error 则回滚。
+// 遇到 MySQL 死锁（1213）或锁等待超时（1205）时按带抖动的指数退避自动重试，
+// 重试行为可通过 TxOption 调整；fn 为 nil 时返回错误。
 func (c *Client) WithTx(
 	ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error, txOpts ...TxOption,
 ) error {
 	if fn == nil {
 		return errNilTxFunc
 	}
+
+	// 入口统一标准化，保证重试等待、observer 回调等全部下游路径拿到非 nil ctx。
+	ctx = normalizeContext(ctx)
 
 	// 快路径：未传 TxOption 时直接使用编译期默认值，只在死锁时重试，避免额外分配。
 	if len(txOpts) == 0 {
@@ -107,14 +115,14 @@ func (c *Client) withTxRetry(
 		if lastErr == nil {
 			return nil
 		}
-		if !isDeadlock(lastErr) {
+		if !dsn.IsDeadlock(lastErr) {
 			return lastErr
 		}
 		// 检测到死锁后进行带抖动的退避重试，最后一次不再等待。
 		if attempt < maxRetries {
-			sleep := retryBackoff(attempt, baseWait, maxWait)
+			sleep := dsn.RetryBackoff(attempt, baseWait, maxWait)
 			if observer := c.config.TxRetryObserver; observer != nil {
-				observer(normalizeContext(ctx), TxRetryEvent{
+				observer(ctx, TxRetryEvent{
 					ClientName: c.effectiveName("default"),
 					Attempt:    attempt + 1,
 					MaxRetries: maxRetries,
@@ -134,13 +142,14 @@ func (c *Client) withTxRetry(
 	return lastErr
 }
 
+// WithReadTx 在只读事务中执行 fn，重试行为与 WithTx 的默认值一致。
 func (c *Client) WithReadTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return c.WithTx(ctx, &sql.TxOptions{ReadOnly: true}, fn)
 }
 
-// execTx 执行单次事务尝试。
+// execTx 执行单次事务尝试。ctx 已在 WithTx 入口标准化，必定非 nil。
 func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error) (err error) {
-	txDB := c.db.WithContext(normalizeContext(ctx))
+	txDB := c.db.WithContext(ctx)
 	var tx *gorm.DB
 	if opts != nil {
 		tx = txDB.Begin(opts)
@@ -174,15 +183,4 @@ func rollbackError(tx *gorm.DB) error {
 		return nil
 	}
 	return err
-}
-
-// isDeadlock 判断错误是否属于 MySQL 死锁（1213）或锁等待超时（1205）。
-func isDeadlock(err error) bool {
-	return dsn.IsDeadlock(err)
-}
-
-// retryBackoff 返回带抖动的指数退避时长。
-// 公式：min(baseWait * 2^attempt + jitter, maxWait)。
-func retryBackoff(attempt int, baseWait, maxWait time.Duration) time.Duration {
-	return dsn.RetryBackoff(attempt, baseWait, maxWait)
 }

@@ -32,6 +32,11 @@ const (
 
 var errNilSQLDB = errors.New("ormx: nil *sql.DB")
 
+// Config 汇总建立 MySQL 连接所需的全部配置：驱动连接参数（MySQL）、
+// 连接池（Pool）、GORM 行为（GORM）、方言（Dialect）以及启动期 Ping 重试策略。
+// Config 为值语义，可安全复制；通过 With 应用 Option 会返回新副本，不修改原值。
+// 字段全部导出以便从配置文件直接映射，但直接修改字段会绕过 Option 的防御逻辑，
+// 合法性由调用方自行保证；优先使用 Option 构建配置。
 type Config struct {
 	Name                     string
 	MySQL                    MySQLConfig
@@ -68,6 +73,9 @@ type MySQLConfig struct {
 	ParseTime            bool              `json:"parse_time" yaml:"parse_time"`
 }
 
+// PoolConfig 描述 *sql.DB 连接池参数。
+// 每个字段仅在通过 DefaultConfig 或对应 Option 显式设置后才会应用到连接池，
+// 未设置的字段保持 database/sql 的原有行为。
 type PoolConfig struct {
 	MaxOpenConns    int
 	MaxIdleConns    int
@@ -80,6 +88,8 @@ type PoolConfig struct {
 	hasConnMaxIdleTime bool
 }
 
+// GORMConfig 描述透传给 gorm.Config 的行为配置，
+// 字段与 gorm.Config 中的同名字段一一对应。
 type GORMConfig struct {
 	Logger                                   gormlogger.Interface
 	NowFunc                                  func() time.Time
@@ -101,6 +111,8 @@ type GORMConfig struct {
 	DryRun                                   bool
 }
 
+// MySQLDialectConfig 描述透传给 GORM MySQL 方言（gorm.io/driver/mysql）的配置，
+// 字段与其 Config 中的同名字段一一对应。
 type MySQLDialectConfig struct {
 	DriverName                    string
 	ServerVersion                 string
@@ -130,6 +142,11 @@ func (c Config) String() string {
 // GoString implements fmt.GoStringer so %#v also redacts the password.
 func (c Config) GoString() string { return c.String() }
 
+// DefaultConfig 返回带合理默认值的 Config：
+// MySQL 默认通过 tcp 连接 127.0.0.1:3306，时区为 time.Local，启用 ParseTime，
+// 并设置拨号/读/写超时；连接池四项参数均使用包内默认值并标记为已设置；
+// GORM 使用默认命名策略；StartupPing 默认开启，重试基础等待 1 秒、上限 5 秒、
+// 默认不重试（StartupPingMaxRetries 为 0）。
 func DefaultConfig() Config {
 	return Config{
 		MySQL: MySQLConfig{
@@ -162,10 +179,12 @@ func DefaultConfig() Config {
 	}
 }
 
+// NewConfig 在 DefaultConfig 的基础上依次应用 opts 并返回结果。
 func NewConfig(opts ...Option) Config {
 	return DefaultConfig().With(opts...)
 }
 
+// With 返回应用 opts 后的 Config 副本，原 Config 不受影响；nil Option 会被跳过。
 func (c Config) With(opts ...Option) Config {
 	clone := c.Clone()
 	for _, opt := range opts {
@@ -177,12 +196,17 @@ func (c Config) With(opts ...Option) Config {
 	return clone
 }
 
+// Clone 返回 Config 的深拷贝，其中 MySQL.Params 映射会被复制，
+// 避免副本与原值共享同一底层 map。
 func (c Config) Clone() Config {
 	clone := c
 	clone.MySQL.Params = cloneStringMap(c.MySQL.Params)
 	return clone
 }
 
+// Open 按当前配置构建 MySQL 连接器并打开 *sql.DB，应用连接池配置后初始化 GORM，
+// 返回拥有该 *sql.DB 所有权的 Client（Close 时会一并关闭）。
+// 若 StartupPing 开启，会先按重试策略 Ping 数据库；任一步骤失败时关闭已打开的连接并返回错误。
 func (c Config) Open(ctx context.Context) (*Client, error) {
 	driverCfg, err := c.DriverConfig()
 	if err != nil {
@@ -204,6 +228,7 @@ func (c Config) Open(ctx context.Context) (*Client, error) {
 	return client, nil
 }
 
+// MustOpen 与 Open 行为一致，但在失败时直接 panic，适用于初始化阶段必须成功的场景。
 func (c Config) MustOpen(ctx context.Context) *Client {
 	client, err := c.Open(ctx)
 	if err != nil {
@@ -222,10 +247,12 @@ func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) 
 	return c.openWithSQLDB(ctx, sqlDB, false, nil)
 }
 
+// Open 以 NewConfig(opts...) 构建配置并调用 Config.Open，是最常用的入口函数。
 func Open(ctx context.Context, opts ...Option) (*Client, error) {
 	return NewConfig(opts...).Open(ctx)
 }
 
+// MustOpen 以 NewConfig(opts...) 构建配置并调用 Config.MustOpen，失败时 panic。
 func MustOpen(ctx context.Context, opts ...Option) *Client {
 	return NewConfig(opts...).MustOpen(ctx)
 }
@@ -237,6 +264,8 @@ func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, er
 	return NewConfig(opts...).OpenWithDB(ctx, sqlDB)
 }
 
+// DriverConfig 根据 MySQL 连接配置生成 go-sql-driver/mysql 的 *mysqldriver.Config，
+// 配置非法（如缺少必填项或参数校验失败）时返回错误。
 func (c Config) DriverConfig() (*mysqldriver.Config, error) {
 	return c.MySQL.params().DriverConfig()
 }
@@ -262,6 +291,8 @@ func (c MySQLConfig) params() dsn.Params {
 	}
 }
 
+// RedactedDSN 返回密码脱敏后的 DSN 字符串：密码非空时替换为 "******"，
+// 可安全用于日志输出；底层 DriverConfig 构建失败时返回错误。
 func (c Config) RedactedDSN() (string, error) {
 	driverCfg, err := c.DriverConfig()
 	if err != nil {
@@ -313,7 +344,7 @@ func pingWithRetry(ctx context.Context, sqlDB *sql.DB, cfg Config) error {
 			return lastErr
 		}
 
-		sleep := retryBackoff(attempt, cfg.StartupPingRetryBaseWait, cfg.StartupPingRetryMaxWait)
+		sleep := dsn.RetryBackoff(attempt, cfg.StartupPingRetryBaseWait, cfg.StartupPingRetryMaxWait)
 		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
