@@ -31,9 +31,9 @@ tag:
 	sed -E -i.bak 's/(const Version = ")([^"]+)(")/\1'"$$new"'\3/' version.go && rm -f version.go.bak; \
 	git add version.go; \
 	git commit -m "chore(release): $$new"; \
-	git push origin HEAD; \
+	git push gtkit HEAD; \
 	git tag -a "$$new" -m "release $$new"; \
-	git push origin "$$new"; \
+	git push gtkit "$$new"; \
 	printf "✅ released: %s\n" "$$new"
 
 ## 查看最新 tag
