@@ -4,6 +4,17 @@
 
 格式参考 Keep a Changelog，版本遵循语义化版本。
 
+## [Unreleased]
+
+### ⚠ 破坏性变更
+
+- 移除 `github.com/gtkit/ormx/jetorm` 子包，已分离为独立模块 [`github.com/gtkit/jetx`](https://github.com/gtkit/jetx)。仅使用 go-jet 的下游不再被动引入 GORM 依赖；ormx 自身也不再传递 `go-jet/jet`、`google/uuid` 等依赖。
+- 迁移方式：将 import `github.com/gtkit/ormx/jetorm` 改为 `github.com/gtkit/jetx`，包名前缀 `jetorm.` 改为 `jetx.`，行为与超时治理模型完全不变。
+
+### Removed
+
+- 移除 `ormx/jetorm` 子包及其对 `go-jet/jet`、`google/uuid` 的依赖
+
 ## [v1.0.4] - 2026-06-12
 
 ### 修复

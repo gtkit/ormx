@@ -1,12 +1,13 @@
 # ormx
 
-企业级 MySQL 数据访问封装（内部使用），单一活跃模块，包含三个包：
+企业级 MySQL 数据访问封装（内部使用），单一活跃模块，包含两个包：
 
 | 包 | 用途 |
 |----|------|
 | `github.com/gtkit/ormx` | 基于 GORM 的客户端——连接管理、集群读写分离、健康探活、事务死锁自动重试、写后读一致性窗口 |
 | `github.com/gtkit/ormx/zlogger` | GORM 的 zap 日志适配——慢查询阈值、trace id 提取、SQL 参数脱敏 |
-| `github.com/gtkit/ormx/jetorm` | 面向 [go-jet](https://github.com/go-jet/jet) 的 SQL-first 封装——连接、连接池、事务与超时治理，不重新抽象 go-jet 的查询 DSL |
+
+> 面向 go-jet 的 SQL-first 封装已分离为独立模块 [`github.com/gtkit/jetx`](https://github.com/gtkit/jetx)。
 
 ## 安装
 
@@ -142,7 +143,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | 方法 | 说明 |
 |------|------|
 | `DB() *gorm.DB` | 取 GORM 句柄 |
-| `SQLDB() *sql.DB` | 取底层 `*sql.DB`（可交给 jetorm 共享连接池） |
+| `SQLDB() *sql.DB` | 取底层 `*sql.DB`（可交给 [jetx](https://github.com/gtkit/jetx) 等共享连接池） |
 | `Config() Config` | 配置快照（深拷贝） |
 | `Name() string` | 实例名（未设置时为 `default`） |
 | `PingContext(ctx) error` | 连通性检查 |
@@ -354,152 +355,6 @@ client, err := ormx.Open(ctx,
 3. 日志级别为 Info → `Info` 级 `gorm query`（全量 SQL 日志，仅建议开发环境开启）
 
 `LogMode` 遵循 GORM 约定返回调级别后的副本，可配合 `db.Session(&gorm.Session{Logger: ...})` 做局部调级。
-
----
-
-## jetorm（go-jet 封装）
-
-jetorm 只做连接、连接池、事务与超时治理；查询构造完全使用 go-jet 自身的 DSL（`jetmysql.Statement`），不另设抽象。
-
-### 使用场景：与 GORM 的分工
-
-jetorm 不是 GORM 的替代品，两者各管一段：
-
-| 场景 | 用哪个 |
-|------|--------|
-| 日常 CRUD、模型驱动的写入、钩子/关联/软删除 | 根包 ormx（GORM） |
-| 多表 JOIN、子查询、聚合、窗口函数、报表类复杂查询 | jetorm（go-jet） |
-| SQL 需要精确可控、想在编译期校验列名和类型 | jetorm（go-jet） |
-
-注意一处刻意保留的行为差异：**事务死锁自动重试，根包默认开启（最多 3 次），jetorm 默认关闭**（需显式 `WithTxRetry` 开启）。根包延续 `orm/v2` 的既有契约；jetorm 面向手写 SQL 的调用方，事务函数重入的副作用更难预估，默认关闭更保守。两边开启重试后语义一致：`fn` 可能执行多次，必须幂等。
-
-切换信号：当你在 GORM 里开始大量写 `Raw()` / `Joins("LEFT JOIN ... ON ...")` 字符串时，就该换 go-jet——它从数据库 schema 生成强类型的表和列代码，写错列名、类型不匹配在编译期就暴露，而 GORM 的字符串 SQL 要到运行时才报错。反过来，简单增删改查用 go-jet 会显得啰嗦，GORM 更省事。
-
-推荐组合：**写路径和简单读走 GORM，复杂读 / 报表走 go-jet，两者共享同一个连接池**（见文末 [与 gorm 客户端共享连接池](#与-gorm-客户端共享连接池)），同一个库不用维护两份连接池配额。
-
-### 快速开始
-
-```go
-import (
-    "github.com/gtkit/ormx/jetorm"
-    jetmysql "github.com/go-jet/jet/v2/mysql"
-)
-
-client, err := jetorm.Open(ctx,
-    jetorm.WithHost("127.0.0.1"),
-    jetorm.WithPort("3306"),
-    jetorm.WithDatabase("app"),
-    jetorm.WithUser("root"),
-    jetorm.WithPassword("secret"),
-    jetorm.WithQueryTimeout(30*time.Second),
-)
-if err != nil {
-    return err
-}
-defer client.Close()
-
-// 查询：dest 为 go-jet 生成的 model
-stmt := table.Users.
-    SELECT(table.Users.AllColumns).
-    WHERE(table.Users.ID.EQ(jetmysql.Int(1)))
-
-var dest []model.Users
-err = client.QueryContext(ctx, stmt, &dest)
-
-// 写入
-res, err := client.ExecContext(ctx,
-    table.Users.INSERT(table.Users.Name).VALUES("alice"),
-)
-
-// 流式读取大结果集
-rows, err := client.Rows(ctx, stmt)
-defer rows.Close()
-for rows.Next() {
-    var u model.Users
-    if err := rows.Scan(&u); err != nil {
-        return err
-    }
-}
-```
-
-### 选项函数
-
-| Option | 默认值 | 说明 |
-|--------|--------|------|
-| `WithHost(host)` | `127.0.0.1` | 主机 |
-| `WithPort(port)` | `3306` | 端口 |
-| `WithDatabase(name)` | 空 | 数据库名 |
-| `WithUser(user)` | 空 | 用户名 |
-| `WithPassword(password)` | 空 | 密码 |
-| `WithDSNParam(key, value)` | — | 追加自定义 DSN 参数（如 `charset`），key 为空时忽略 |
-| `WithLoc(loc)` | `time.Local` | DSN 时区，nil 时忽略 |
-| `WithDialTimeout(d)` | `10s` | 建连超时 |
-| `WithReadTimeout(d)` | `30s` | I/O 读超时 |
-| `WithWriteTimeout(d)` | `30s` | I/O 写超时 |
-| `WithMaxOpenConns(n)` | `50` | 最大打开连接数 |
-| `WithMaxIdleConns(n)` | `10` | 最大空闲连接数 |
-| `WithConnMaxLifetime(d)` | `30m` | 连接最大存活时间 |
-| `WithConnMaxIdleTime(d)` | `10m` | 连接最大空闲时间 |
-| `WithQueryTimeout(d)` | `0`（不限制） | **单条语句**执行超时；调用方 context 已有 deadline 时不叠加 |
-| `WithTxTimeout(d)` | `0`（不限制） | **单次事务**（含提交）的总时长上限 |
-| `WithTxRetry(maxRetries, baseWait, maxWait)` | `0`（不重试） | 死锁（1213）/锁等待超时（1205）自动重试；baseWait/maxWait 传 0 时取默认 `5ms`/`50ms` |
-
-### 超时治理模型
-
-- `QueryTimeout` 只约束单条语句（`ExecContext` / `QueryContext` / `Rows`，含事务内的语句），不限制事务整体生命周期，避免误杀长事务。
-- 事务总时长由 `TxTimeout` 单独控制；两者可以同时设置。
-- 任一超时都不会覆盖调用方 context 已有的更短 deadline。
-
-### 事务
-
-```go
-client, err := jetorm.Open(ctx,
-    // ...连接选项...
-    jetorm.WithTxTimeout(2*time.Minute),
-    jetorm.WithTxRetry(3, 0, 0), // 开启死锁重试，退避取默认 5ms/50ms
-)
-
-err = client.WithTx(ctx, nil, func(tx *jetorm.Tx) error {
-    if _, err := tx.ExecContext(ctx, insertStmt); err != nil {
-        return err
-    }
-    return tx.QueryContext(ctx, selectStmt, &dest)
-})
-```
-
-- `fn` 返回 nil 则提交，返回 error 则回滚；panic 时回滚后继续抛出。
-- 第二个参数可传 `*sql.TxOptions` 指定隔离级别/只读。
-- 配置了 `WithTxRetry` 时，死锁/锁等待超时会按带抖动的指数退避自动重试，`fn` 可能执行多次，必须保证幂等；默认不开启。
-- `*jetorm.Tx` 提供与 Client 同名的 `ExecContext` / `QueryContext` / `Rows`，同样受 `QueryTimeout` 约束。
-
-### Client 方法
-
-| 方法 | 说明 |
-|------|------|
-| `DB() *sql.DB` | 取底层连接池 |
-| `Config() Config` | 配置快照（深拷贝） |
-| `PingContext(ctx) error` | 连通性检查（受 QueryTimeout 约束） |
-| `Stats() sql.DBStats` | 连接池统计 |
-| `ExecContext(ctx, stmt)` | 执行写语句 |
-| `QueryContext(ctx, stmt, dest)` | 查询并扫描到 dest |
-| `Rows(ctx, stmt)` | 流式读取 |
-| `WithTx(ctx, opts, fn)` | 事务执行 |
-| `Close() error` | 关闭连接池（`OpenWithDB` 包装的实例不关闭外部 `*sql.DB`） |
-
-### 与 gorm 客户端共享连接池
-
-同一个库既要走 GORM 又要写复杂 SQL 时，让 jetorm 复用 ormx 客户端的 `*sql.DB`，避免两份连接池：
-
-```go
-gormClient, err := ormx.Open(ctx /* ... */)
-
-jetClient, err := jetorm.OpenWithDB(gormClient.SQLDB(), jetorm.NewConfig(
-    jetorm.WithQueryTimeout(30*time.Second),
-))
-// jetClient.Close() 不会关闭共享的 *sql.DB，生命周期由 gormClient 管理
-```
-
-注意：`OpenWithDB` 会按传入的 Config 重新应用连接池参数（MaxOpenConns 等），共享场景下建议与 ormx 侧保持一致或省略相关 Option。
 
 ---
 
