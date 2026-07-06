@@ -1,4 +1,4 @@
-package dsn
+package ormx
 
 import (
 	"errors"
@@ -9,37 +9,37 @@ import (
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
-func TestParamsAddress(t *testing.T) {
+func TestMySQLConfigAddress(t *testing.T) {
 	tests := []struct {
 		name    string
-		params  Params
+		cfg     MySQLConfig
 		want    string
 		wantErr error
 	}{
-		{name: "addr 优先于 host/port", params: Params{Addr: "db:3307", Host: "ignored", Port: "1"}, want: "db:3307"},
-		{name: "host+port 拼接", params: Params{Host: "127.0.0.1", Port: "3306"}, want: "127.0.0.1:3306"},
-		{name: "ipv6 host 加方括号", params: Params{Host: "::1", Port: "3306"}, want: "[::1]:3306"},
-		{name: "缺 host", params: Params{Port: "3306"}, wantErr: ErrAddressRequired},
-		{name: "缺 port", params: Params{Host: "127.0.0.1"}, wantErr: ErrAddressRequired},
-		{name: "全空", params: Params{}, wantErr: ErrAddressRequired},
+		{name: "addr 优先于 host/port", cfg: MySQLConfig{Addr: "db:3307", Host: "ignored", Port: "1"}, want: "db:3307"},
+		{name: "host+port 拼接", cfg: MySQLConfig{Host: "127.0.0.1", Port: "3306"}, want: "127.0.0.1:3306"},
+		{name: "ipv6 host 加方括号", cfg: MySQLConfig{Host: "::1", Port: "3306"}, want: "[::1]:3306"},
+		{name: "缺 host", cfg: MySQLConfig{Port: "3306"}, wantErr: errAddressRequired},
+		{name: "缺 port", cfg: MySQLConfig{Host: "127.0.0.1"}, wantErr: errAddressRequired},
+		{name: "全空", cfg: MySQLConfig{}, wantErr: errAddressRequired},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.params.Address()
+			got, err := tt.cfg.address()
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("Address() error = %v, want %v", err, tt.wantErr)
+				t.Fatalf("address() error = %v, want %v", err, tt.wantErr)
 			}
 			if got != tt.want {
-				t.Fatalf("Address() = %q, want %q", got, tt.want)
+				t.Fatalf("address() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestParamsDriverConfig(t *testing.T) {
+func TestMySQLConfigDriverConfig(t *testing.T) {
 	loc := time.UTC
-	p := Params{
+	c := MySQLConfig{
 		User:                 "alice",
 		Password:             "secret",
 		Host:                 "127.0.0.1",
@@ -56,9 +56,9 @@ func TestParamsDriverConfig(t *testing.T) {
 		ParseTime:            true,
 	}
 
-	cfg, err := p.DriverConfig()
+	cfg, err := c.driverConfig()
 	if err != nil {
-		t.Fatalf("DriverConfig: %v", err)
+		t.Fatalf("driverConfig: %v", err)
 	}
 	if cfg.User != "alice" || cfg.Passwd != "secret" {
 		t.Fatalf("unexpected credentials: %q/%q", cfg.User, cfg.Passwd)
@@ -95,11 +95,11 @@ func TestParamsDriverConfig(t *testing.T) {
 	}
 }
 
-func TestParamsDriverConfigClonesParams(t *testing.T) {
+func TestMySQLConfigDriverConfigClonesParams(t *testing.T) {
 	src := map[string]string{"charset": "utf8mb4"}
-	cfg, err := Params{Addr: "db:3306", Params: src}.DriverConfig()
+	cfg, err := MySQLConfig{Addr: "db:3306", Params: src}.driverConfig()
 	if err != nil {
-		t.Fatalf("DriverConfig: %v", err)
+		t.Fatalf("driverConfig: %v", err)
 	}
 
 	src["charset"] = "latin1"
@@ -108,19 +108,19 @@ func TestParamsDriverConfigClonesParams(t *testing.T) {
 	}
 }
 
-func TestParamsDriverConfigKeepsCustomNet(t *testing.T) {
-	cfg, err := Params{Net: "unix", Addr: "/tmp/mysql.sock"}.DriverConfig()
+func TestMySQLConfigDriverConfigKeepsCustomNet(t *testing.T) {
+	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig()
 	if err != nil {
-		t.Fatalf("DriverConfig: %v", err)
+		t.Fatalf("driverConfig: %v", err)
 	}
 	if cfg.Net != "unix" {
 		t.Fatalf("expected net unix, got %q", cfg.Net)
 	}
 }
 
-func TestParamsDriverConfigAddressError(t *testing.T) {
-	if _, err := (Params{}).DriverConfig(); !errors.Is(err, ErrAddressRequired) {
-		t.Fatalf("expected ErrAddressRequired, got %v", err)
+func TestMySQLConfigDriverConfigAddressError(t *testing.T) {
+	if _, err := (MySQLConfig{}).driverConfig(); !errors.Is(err, errAddressRequired) {
+		t.Fatalf("expected errAddressRequired, got %v", err)
 	}
 }
 
@@ -140,8 +140,8 @@ func TestIsDeadlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsDeadlock(tt.err); got != tt.want {
-				t.Fatalf("IsDeadlock(%v) = %v, want %v", tt.err, got, tt.want)
+			if got := isDeadlock(tt.err); got != tt.want {
+				t.Fatalf("isDeadlock(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -156,9 +156,9 @@ func TestRetryBackoffWithinJitterRange(t *testing.T) {
 		floor := baseWait << attempt
 		ceil := floor + floor/2 // 抖动最多 50%
 		for range 50 {
-			got := RetryBackoff(attempt, baseWait, maxWait)
+			got := retryBackoff(attempt, baseWait, maxWait)
 			if got < floor || got > ceil {
-				t.Fatalf("RetryBackoff(attempt=%d) = %v, want in [%v, %v]", attempt, got, floor, ceil)
+				t.Fatalf("retryBackoff(attempt=%d) = %v, want in [%v, %v]", attempt, got, floor, ceil)
 			}
 		}
 	}
@@ -166,8 +166,8 @@ func TestRetryBackoffWithinJitterRange(t *testing.T) {
 
 func TestRetryBackoffCappedByMaxWait(t *testing.T) {
 	const maxWait = 20 * time.Millisecond
-	if got := RetryBackoff(3, 10*time.Millisecond, maxWait); got != maxWait {
-		t.Fatalf("RetryBackoff = %v, want capped at %v", got, maxWait)
+	if got := retryBackoff(3, 10*time.Millisecond, maxWait); got != maxWait {
+		t.Fatalf("retryBackoff = %v, want capped at %v", got, maxWait)
 	}
 }
 
@@ -175,8 +175,8 @@ func TestRetryBackoffCappedByMaxWait(t *testing.T) {
 func TestRetryBackoffOverflowReturnsMaxWait(t *testing.T) {
 	const maxWait = 50 * time.Millisecond
 	for _, attempt := range []int{41, 62, 63} {
-		if got := RetryBackoff(attempt, 5*time.Millisecond, maxWait); got != maxWait {
-			t.Fatalf("RetryBackoff(attempt=%d) = %v, want %v", attempt, got, maxWait)
+		if got := retryBackoff(attempt, 5*time.Millisecond, maxWait); got != maxWait {
+			t.Fatalf("retryBackoff(attempt=%d) = %v, want %v", attempt, got, maxWait)
 		}
 	}
 }

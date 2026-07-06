@@ -6,8 +6,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gtkit/ormx/internal/dsn"
-
 	"gorm.io/gorm"
 )
 
@@ -115,12 +113,12 @@ func (c *Client) withTxRetry(
 		if lastErr == nil {
 			return nil
 		}
-		if !dsn.IsDeadlock(lastErr) {
+		if !isDeadlock(lastErr) {
 			return lastErr
 		}
 		// 检测到死锁后进行带抖动的退避重试，最后一次不再等待。
 		if attempt < maxRetries {
-			sleep := dsn.RetryBackoff(attempt, baseWait, maxWait)
+			sleep := retryBackoff(attempt, baseWait, maxWait)
 			if observer := c.config.TxRetryObserver; observer != nil {
 				observer(ctx, TxRetryEvent{
 					ClientName: c.effectiveName("default"),

@@ -18,6 +18,7 @@ func BenchmarkClientDB(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_ = client.DB()
@@ -45,6 +46,7 @@ func BenchmarkClusterReadDB(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_, _ = cluster.ReaderClient()
@@ -70,6 +72,7 @@ func BenchmarkClusterReaderClientCtx(b *testing.B) {
 
 	ctx := context.Background()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_, _ = cluster.ReaderClientCtx(ctx)
@@ -95,6 +98,7 @@ func BenchmarkClusterReaderClientCtxWriteFlag(b *testing.B) {
 
 	ctx := ContextWithWriteFlag(context.Background())
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_, _ = cluster.ReaderClientCtx(ctx)
@@ -122,6 +126,7 @@ func BenchmarkClusterReadDBParallel(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -143,6 +148,7 @@ func BenchmarkClusterWriteClient(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_, _ = cluster.WriteClient()
@@ -163,6 +169,7 @@ func BenchmarkWithTx(b *testing.B) {
 	ctx := context.Background()
 	noop := func(_ *gorm.DB) error { return nil }
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_ = client.WithTx(ctx, nil, noop)
@@ -182,6 +189,7 @@ func BenchmarkPingContext(b *testing.B) {
 
 	ctx := context.Background()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_ = client.PingContext(ctx)

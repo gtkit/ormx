@@ -10,14 +10,22 @@ import (
 	"time"
 )
 
+// 集群路由的可判断错误，调用方可用 errors.Is 区分失败类型。
+var (
+	// ErrNoReadableNode 表示没有可用的读节点：所有副本均不可读，
+	// 且回退主库被关闭或主库也不可读。
+	ErrNoReadableNode = errors.New("ormx: no readable node available")
+	// ErrPrimaryUnavailable 表示主库不可用（不存在或处于 down 状态）。
+	ErrPrimaryUnavailable = errors.New("ormx: primary unavailable")
+	// ErrClusterClosed 表示集群已关闭，不再接受任何操作。
+	ErrClusterClosed = errors.New("ormx: cluster is closed")
+)
+
 var (
 	errNilPrimaryClient   = errors.New("ormx: nil primary client")
 	errNilReplicaClient   = errors.New("ormx: nil replica client")
 	errReplicaNotFound    = errors.New("ormx: replica not found")
-	errNoReadableNode     = errors.New("ormx: no readable node available")
-	errPrimaryUnavailable = errors.New("ormx: primary unavailable")
 	errDuplicateNodeName  = errors.New("ormx: duplicate node name")
-	errClusterClosed      = errors.New("ormx: cluster is closed")
 	errTopologyChanged    = errors.New("ormx: topology changed during operation, retry")
 	errHealthLoopInterval = errors.New("ormx: health loop interval must be greater than zero")
 )
@@ -114,7 +122,6 @@ func OpenClusterWithOptions(
 
 	// Open replicas in parallel to reduce total startup latency.
 	type result struct {
-		index  int
 		client *Client
 		err    error
 	}
@@ -125,12 +132,12 @@ func OpenClusterWithOptions(
 	for i := range replicas {
 		wg.Go(func() {
 			client, openErr := replicas[i].Open(ctx)
-			results[i] = result{index: i, client: client, err: openErr}
+			results[i] = result{client: client, err: openErr}
 		})
 	}
 	wg.Wait()
 
-	for _, r := range results {
+	for i, r := range results {
 		if r.client != nil {
 			opened = append(opened, r.client)
 		}
@@ -138,7 +145,7 @@ func OpenClusterWithOptions(
 			err = r.err
 			return nil, err
 		}
-		replicaClients[r.index] = r.client
+		replicaClients[i] = r.client
 	}
 
 	return NewClusterWithOptions(primaryClient, replicaClients, opts...)
@@ -206,9 +213,8 @@ func WithAutoRecoverReplicas(enabled bool) ClusterOption {
 	}
 }
 
-// WithHealthCheckTimeout sets the default timeout for health check pings.
-// If the caller's context already has a shorter deadline, that takes precedence.
-// Default: 5s.
+// WithHealthCheckTimeout 设置健康检查 Ping 的默认超时；
+// 调用方 context 已带更短 deadline 时以后者优先。默认 5s。
 func WithHealthCheckTimeout(timeout time.Duration) ClusterOption {
 	return func(options *clusterOptions) {
 		if timeout > 0 {
@@ -257,12 +263,12 @@ func (c *Cluster) Nodes() []Node {
 }
 
 // Close 关闭集群并释放所有节点的底层连接（同一客户端只关闭一次），
-// 返回各节点关闭错误的合并结果；重复调用返回 errClusterClosed。
+// 返回各节点关闭错误的合并结果；重复调用返回 ErrClusterClosed。
 func (c *Cluster) Close() error {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return errClusterClosed
+		return ErrClusterClosed
 	}
 	c.closed = true
 

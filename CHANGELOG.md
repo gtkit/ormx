@@ -4,7 +4,22 @@
 
 格式参考 Keep a Changelog，版本遵循语义化版本。
 
-## [v1.1.0]
+## [Unreleased]
+
+### Added
+
+- 新增 MIT LICENSE，pkg.go.dev 可正常展示模块文档
+- 新增可判断的集群路由错误 `ErrNoReadableNode`、`ErrPrimaryUnavailable`、`ErrClusterClosed`，可用 `errors.Is` 区分读写路由的失败类型
+- 新增根包 package 文档（pkg.go.dev 包摘要与用法概述）
+
+### Changed
+
+- 导出 API 的 GoDoc 统一为简体中文（语义不变）
+
+- 文档：`DrainReplica` 补充与健康巡检自动恢复的交互说明——draining 副本若探活失败被置为 down，恢复后会被自动拉回读池，长期摘除需暂停健康循环
+- 文档：明确 `Config` 从配置文件映射时须以 `DefaultConfig()`/`NewConfig()` 为基底，零值直接反序列化会使连接池配置被静默忽略
+
+## [v1.1.0] - 2026-06-16
 
 ### ⚠ 破坏性变更
 

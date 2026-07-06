@@ -110,7 +110,6 @@ func (c *Client) healthCheck(ctx context.Context, name string, role NodeRole) He
 		Role:      role,
 		State:     NodeStateReady,
 		CheckedAt: start,
-		Stats:     c.StatsSnapshot(),
 		Status:    HealthStatusUp,
 	}
 
@@ -167,16 +166,16 @@ func newDBStatsSnapshot(stats sql.DBStats) DBStatsSnapshot {
 
 func (s DBStatsSnapshot) metrics(labels map[string]string) []MetricSample {
 	return []MetricSample{
-		{Name: "orm_db_max_open_connections", Value: float64(s.MaxOpenConnections), Labels: cloneLabels(labels)},
-		{Name: "orm_db_open_connections", Value: float64(s.OpenConnections), Labels: cloneLabels(labels)},
-		{Name: "orm_db_in_use_connections", Value: float64(s.InUse), Labels: cloneLabels(labels)},
-		{Name: "orm_db_idle_connections", Value: float64(s.Idle), Labels: cloneLabels(labels)},
-		{Name: "orm_db_wait_count_total", Value: float64(s.WaitCount), Labels: cloneLabels(labels)},
-		{Name: "orm_db_wait_duration_seconds_total", Value: s.WaitDuration.Seconds(), Labels: cloneLabels(labels)},
-		{Name: "orm_db_max_idle_closed_total", Value: float64(s.MaxIdleClosed), Labels: cloneLabels(labels)},
-		{Name: "orm_db_max_idle_time_closed_total", Value: float64(s.MaxIdleTimeClosed), Labels: cloneLabels(labels)},
-		{Name: "orm_db_max_lifetime_closed_total", Value: float64(s.MaxLifetimeClosed), Labels: cloneLabels(labels)},
-		{Name: "orm_db_connection_utilization", Value: s.Utilization, Labels: cloneLabels(labels)},
+		{Name: "orm_db_max_open_connections", Value: float64(s.MaxOpenConnections), Labels: maps.Clone(labels)},
+		{Name: "orm_db_open_connections", Value: float64(s.OpenConnections), Labels: maps.Clone(labels)},
+		{Name: "orm_db_in_use_connections", Value: float64(s.InUse), Labels: maps.Clone(labels)},
+		{Name: "orm_db_idle_connections", Value: float64(s.Idle), Labels: maps.Clone(labels)},
+		{Name: "orm_db_wait_count_total", Value: float64(s.WaitCount), Labels: maps.Clone(labels)},
+		{Name: "orm_db_wait_duration_seconds_total", Value: s.WaitDuration.Seconds(), Labels: maps.Clone(labels)},
+		{Name: "orm_db_max_idle_closed_total", Value: float64(s.MaxIdleClosed), Labels: maps.Clone(labels)},
+		{Name: "orm_db_max_idle_time_closed_total", Value: float64(s.MaxIdleTimeClosed), Labels: maps.Clone(labels)},
+		{Name: "orm_db_max_lifetime_closed_total", Value: float64(s.MaxLifetimeClosed), Labels: maps.Clone(labels)},
+		{Name: "orm_db_connection_utilization", Value: s.Utilization, Labels: maps.Clone(labels)},
 	}
 }
 
@@ -188,8 +187,4 @@ func metricLabels(name string, role NodeRole) map[string]string {
 		labels["name"] = name
 	}
 	return labels
-}
-
-func cloneLabels(src map[string]string) map[string]string {
-	return maps.Clone(src)
 }

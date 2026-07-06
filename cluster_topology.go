@@ -7,11 +7,17 @@ import (
 
 // DrainReplica 把指定名称的副本置为 draining 状态，将其从读流量中摘除；
 // cause 记录为该节点的最近错误。副本不存在或集群已关闭时返回错误。
+//
+// 注意：draining 不是长期粘性状态。若该副本随后探活失败被 Refresh 置为 down，
+// 待其探活恢复且开启 autoRecoverReplicas 时会被自动拉回 ready、重新接收读流量，
+// 摘除意图即告失效——维护窗口内节点重启（Ping 短暂失败）恰好会触发这一路径。
+// 需要长期摘除时，请在运维侧暂停健康循环（停止 RunHealthLoop / 不再调用 Refresh），
+// 或在节点恢复后重新调用 DrainReplica。
 func (c *Cluster) DrainReplica(name string, cause error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return errClusterClosed
+		return ErrClusterClosed
 	}
 
 	replica := c.findReplicaLocked(name)
@@ -29,7 +35,7 @@ func (c *Cluster) RecoverReplica(ctx context.Context, name string) error {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
-		return errClusterClosed
+		return ErrClusterClosed
 	}
 	replica := c.findReplicaLocked(name)
 	if replica == nil {
@@ -46,7 +52,7 @@ func (c *Cluster) RecoverReplica(ctx context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return errClusterClosed
+		return ErrClusterClosed
 	}
 
 	// Topology changed while pinging — the node may have been promoted or removed.
@@ -73,11 +79,11 @@ func (c *Cluster) MarkPrimaryDown(cause error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return errClusterClosed
+		return ErrClusterClosed
 	}
 
 	if c.primary == nil {
-		return errPrimaryUnavailable
+		return ErrPrimaryUnavailable
 	}
 	c.primary.setState(NodeStateDown, cause)
 	return nil
@@ -93,7 +99,7 @@ func (c *Cluster) SwitchPrimary(ctx context.Context, name string) (Node, error) 
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
-		return Node{}, errClusterClosed
+		return Node{}, ErrClusterClosed
 	}
 
 	// Fast path: requested node is already the primary.
@@ -119,7 +125,7 @@ func (c *Cluster) switchPrimaryPingExisting(ctx context.Context, name string) (N
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
-			return Node{}, errClusterClosed
+			return Node{}, ErrClusterClosed
 		}
 		if c.epoch == epochBefore && c.primary != nil && c.primary.name == name {
 			c.primary.setState(NodeStateDown, err)
@@ -131,7 +137,7 @@ func (c *Cluster) switchPrimaryPingExisting(ctx context.Context, name string) (N
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.closed {
-		return Node{}, errClusterClosed
+		return Node{}, ErrClusterClosed
 	}
 	if c.primary != nil && c.primary.name == name {
 		return c.primary.snapshot(), nil
@@ -161,7 +167,7 @@ func (c *Cluster) switchPrimaryPromote(ctx context.Context, name string) (Node, 
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
-			return Node{}, errClusterClosed
+			return Node{}, ErrClusterClosed
 		}
 		if c.epoch == epochBefore {
 			if r := c.findReplicaLocked(name); r != nil {
@@ -175,7 +181,7 @@ func (c *Cluster) switchPrimaryPromote(ctx context.Context, name string) (Node, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return Node{}, errClusterClosed
+		return Node{}, ErrClusterClosed
 	}
 
 	// Re-check: topology may have changed during ping.

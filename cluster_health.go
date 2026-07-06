@@ -51,8 +51,8 @@ func (c *Cluster) Refresh(ctx context.Context) ClusterHealthReport {
 	return buildClusterReport(checkedAt, finalReports)
 }
 
-// RunHealthLoop periodically refreshes cluster health until ctx is canceled.
-// Callers should start it in their own goroutine to control shutdown semantics.
+// RunHealthLoop 按 interval 周期性刷新集群健康状态（调用 Refresh），直到 ctx 取消；
+// interval ≤ 0 时返回错误。由调用方自起 goroutine，以掌控退出语义。
 func (c *Cluster) RunHealthLoop(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		return errHealthLoopInterval
@@ -67,7 +67,7 @@ func (c *Cluster) RunHealthLoop(ctx context.Context, interval time.Duration) err
 	closed := c.closed
 	c.mu.RUnlock()
 	if closed {
-		return errClusterClosed
+		return ErrClusterClosed
 	}
 
 	c.Refresh(ctx)
@@ -84,7 +84,7 @@ func (c *Cluster) RunHealthLoop(ctx context.Context, interval time.Duration) err
 			closed = c.closed
 			c.mu.RUnlock()
 			if closed {
-				return errClusterClosed
+				return ErrClusterClosed
 			}
 			c.Refresh(ctx)
 		}

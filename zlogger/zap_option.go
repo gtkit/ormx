@@ -49,11 +49,10 @@ func WithParameterizedQueries(enabled bool) Option {
 	}
 }
 
-// WithTraceIDExtractor sets a function that extracts a trace/request ID from context.
-// The extracted ID is attached to every log entry as the "trace_id" field,
-// enabling correlation between SQL logs and the originating request.
+// WithTraceIDExtractor 设置从 context 提取 trace/request ID 的函数。
+// 提取到的 ID 会作为 "trace_id" 字段附加到每条日志，用于串联 SQL 日志与请求链路。
 //
-// Example:
+// 示例：
 //
 //	WithTraceIDExtractor(func(ctx context.Context) string {
 //	    if id, ok := ctx.Value("X-Request-ID").(string); ok {

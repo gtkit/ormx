@@ -19,8 +19,8 @@ const slowTime = 200 * time.Millisecond
 // nopLogger is a package-level singleton to avoid repeated allocations.
 var nopLogger = zap.NewNop()
 
-// TraceIDExtractor extracts a trace/request ID from a context for log correlation.
-// Return an empty string if no trace ID is present.
+// TraceIDExtractor 从 context 提取 trace/request ID 用于日志关联；
+// 无可用 ID 时应返回空字符串。
 type TraceIDExtractor func(ctx context.Context) string
 
 // GormLogger 是基于 zap 的 GORM 日志器，实现 gorm.io/gorm/logger 的 Interface。
@@ -36,9 +36,7 @@ type GormLogger struct {
 	parameterizedQueries      bool
 }
 
-func _() {
-	var _ gormlogger.Interface = (*GormLogger)(nil)
-}
+var _ gormlogger.Interface = (*GormLogger)(nil)
 
 // New 按给定 Option 构造一个 GormLogger 并以 gormlogger.Interface 返回。
 // 默认使用 no-op logger、慢查询阈值 200ms、日志级别 Warn；nil Option 会被跳过。
@@ -120,7 +118,7 @@ func (l *GormLogger) Trace(
 
 // ParamsFilter 实现 GORM 的参数过滤钩子：启用参数化查询（WithParameterizedQueries）时
 // 返回原始 SQL 并丢弃绑定参数，使日志中不出现真实参数值；否则原样返回 SQL 与参数。
-func (l *GormLogger) ParamsFilter(_ context.Context, sql string, params ...interface{}) (string, []interface{}) {
+func (l *GormLogger) ParamsFilter(_ context.Context, sql string, params ...any) (string, []any) {
 	if l.parameterizedQueries {
 		return sql, nil
 	}

@@ -1,4 +1,20 @@
 
+# 敏感信息（安全基线，零容忍）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+credentials.*
+
+# 构建与测试产物
+bin/
+dist/
+build/
+coverage/
+coverage.out
+
 # Harness: 本地工具与 Agent 运行产物
 .openspec-auto-backup/
 .openspec-auto/

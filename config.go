@@ -8,8 +8,6 @@ import (
 	"maps"
 	"time"
 
-	"github.com/gtkit/ormx/internal/dsn"
-
 	mysqldriver "github.com/go-sql-driver/mysql"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -17,15 +15,16 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+// 连接与连接池默认值。
 const (
-	defaultDialTimeout         = dsn.DefaultDialTimeout
-	defaultReadTimeout         = dsn.DefaultReadTimeout
-	defaultWriteTimeout        = dsn.DefaultWriteTimeout
+	defaultDialTimeout         = 10 * time.Second
+	defaultReadTimeout         = 30 * time.Second
+	defaultWriteTimeout        = 30 * time.Second
 	defaultIdentifierMaxLength = 64
-	defaultMaxOpenConns        = dsn.DefaultMaxOpenConns
-	defaultMaxIdleConns        = dsn.DefaultMaxIdleConns
-	defaultConnMaxLifetime     = dsn.DefaultConnMaxLifetime
-	defaultConnMaxIdleTime     = dsn.DefaultConnMaxIdleTime
+	defaultMaxOpenConns        = 50
+	defaultMaxIdleConns        = 10
+	defaultConnMaxLifetime     = 30 * time.Minute
+	defaultConnMaxIdleTime     = 10 * time.Minute
 	defaultHealthCheckTimeout  = 5 * time.Second
 	defaultStartupPingRetryMax = 5 * time.Second
 )
@@ -37,6 +36,8 @@ var errNilSQLDB = errors.New("ormx: nil *sql.DB")
 // Config 为值语义，可安全复制；通过 With 应用 Option 会返回新副本，不修改原值。
 // 字段全部导出以便从配置文件直接映射，但直接修改字段会绕过 Option 的防御逻辑，
 // 合法性由调用方自行保证；优先使用 Option 构建配置。
+// 注意：从配置文件映射时必须以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段；
+// 对零值 Config 直接反序列化会缺少 Pool 各字段的"已设置"标记，连接池配置将被静默忽略。
 type Config struct {
 	Name                     string
 	MySQL                    MySQLConfig
@@ -51,9 +52,9 @@ type Config struct {
 	StartupPingRetryMaxWait  time.Duration
 }
 
-// MySQLConfig describes driver-level connection settings.
-// Addr takes precedence over Host and Port when both are set.
-// Prefer the Option helpers so Addr/Host/Port precedence stays consistent.
+// MySQLConfig 描述驱动层连接设置。
+// Addr 与 Host/Port 同时设置时 Addr 优先。
+// 建议通过 Option 辅助函数设置，以保证 Addr/Host/Port 的优先级语义一致。
 type MySQLConfig struct {
 	User                 string            `json:"user"     yaml:"user"`
 	Password             string            `json:"-"        yaml:"-"`
@@ -129,8 +130,8 @@ type MySQLDialectConfig struct {
 	DontSupportDropConstraint     bool
 }
 
-// String returns a human-readable representation with the password redacted.
-// This prevents accidental credential leakage via fmt.Print / log output.
+// String 返回密码已脱敏的可读表示，
+// 防止经 fmt.Print / 日志输出意外泄露凭据。
 func (c Config) String() string {
 	dsn, err := c.RedactedDSN()
 	if err != nil {
@@ -139,7 +140,7 @@ func (c Config) String() string {
 	return fmt.Sprintf("ormx.Config{name=%s, dsn=%s}", c.Name, dsn)
 }
 
-// GoString implements fmt.GoStringer so %#v also redacts the password.
+// GoString 实现 fmt.GoStringer，使 %#v 输出同样脱敏密码。
 func (c Config) GoString() string { return c.String() }
 
 // DefaultConfig 返回带合理默认值的 Config：
@@ -200,7 +201,7 @@ func (c Config) With(opts ...Option) Config {
 // 避免副本与原值共享同一底层 map。
 func (c Config) Clone() Config {
 	clone := c
-	clone.MySQL.Params = cloneStringMap(c.MySQL.Params)
+	clone.MySQL.Params = maps.Clone(c.MySQL.Params)
 	return clone
 }
 
@@ -237,9 +238,8 @@ func (c Config) MustOpen(ctx context.Context) *Client {
 	return client
 }
 
-// OpenWithDB wraps an existing *sql.DB.
-// Pool settings from Config.Pool are applied to sqlDB before GORM initialization.
-// The caller retains ownership of sqlDB regardless of success or failure.
+// OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 Config.Pool 的连接池设置应用到 sqlDB。
+// 无论成败，sqlDB 的所有权始终归调用方（Client.Close 不会关闭它）。
 func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) {
 	if sqlDB == nil {
 		return nil, errNilSQLDB
@@ -257,9 +257,8 @@ func MustOpen(ctx context.Context, opts ...Option) *Client {
 	return NewConfig(opts...).MustOpen(ctx)
 }
 
-// OpenWithDB wraps an existing *sql.DB.
-// Pool settings from the supplied options are applied to sqlDB before GORM initialization.
-// The caller retains ownership of sqlDB regardless of success or failure.
+// OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 opts 中的连接池设置应用到 sqlDB。
+// 无论成败，sqlDB 的所有权始终归调用方（Client.Close 不会关闭它）。
 func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, error) {
 	return NewConfig(opts...).OpenWithDB(ctx, sqlDB)
 }
@@ -267,28 +266,7 @@ func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, er
 // DriverConfig 根据 MySQL 连接配置生成 go-sql-driver/mysql 的 *mysqldriver.Config，
 // 配置非法（如缺少必填项或参数校验失败）时返回错误。
 func (c Config) DriverConfig() (*mysqldriver.Config, error) {
-	return c.MySQL.params().DriverConfig()
-}
-
-func (c MySQLConfig) params() dsn.Params {
-	return dsn.Params{
-		User:                 c.User,
-		Password:             c.Password,
-		Net:                  c.Net,
-		Host:                 c.Host,
-		Port:                 c.Port,
-		Addr:                 c.Addr,
-		Database:             c.Database,
-		Params:               c.Params,
-		ConnectionAttributes: c.ConnectionAttributes,
-		Collation:            c.Collation,
-		Loc:                  c.Loc,
-		TLSConfig:            c.TLSConfig,
-		Timeout:              c.Timeout,
-		ReadTimeout:          c.ReadTimeout,
-		WriteTimeout:         c.WriteTimeout,
-		ParseTime:            c.ParseTime,
-	}
+	return c.MySQL.driverConfig()
 }
 
 // RedactedDSN 返回密码脱敏后的 DSN 字符串：密码非空时替换为 "******"，
@@ -344,7 +322,7 @@ func pingWithRetry(ctx context.Context, sqlDB *sql.DB, cfg Config) error {
 			return lastErr
 		}
 
-		sleep := dsn.RetryBackoff(attempt, cfg.StartupPingRetryBaseWait, cfg.StartupPingRetryMaxWait)
+		sleep := retryBackoff(attempt, cfg.StartupPingRetryBaseWait, cfg.StartupPingRetryMaxWait)
 		timer := time.NewTimer(sleep)
 		select {
 		case <-ctx.Done():
@@ -436,8 +414,4 @@ func normalizeContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
-}
-
-func cloneStringMap(src map[string]string) map[string]string {
-	return maps.Clone(src)
 }

@@ -15,14 +15,13 @@ func (c *Cluster) Reader() *Client {
 
 // ReaderClient 按轮询（round-robin）从 ready 状态的副本中选出一个读客户端；
 // 没有可用副本且开启 readFallbackToPrimary 时回退到主库，
-// 否则返回 errNoReadableNode。
+// 否则返回 ErrNoReadableNode。
 func (c *Cluster) ReaderClient() (*Client, error) {
 	return c.readerClient(false)
 }
 
-// ReaderClientCtx returns a read client, respecting the write flag in ctx.
-// If [ContextWithWriteFlag] was called on ctx, reads are routed to the
-// primary to guarantee read-after-write consistency.
+// ReaderClientCtx 返回读客户端，并感知 ctx 中的写标记：
+// ctx 带有效写标记（[ContextWithWriteFlag]）时路由到主库，保证写后读一致性。
 func (c *Cluster) ReaderClientCtx(ctx context.Context) (*Client, error) {
 	return c.readerClient(HasWriteFlag(ctx))
 }
@@ -31,14 +30,14 @@ func (c *Cluster) readerClient(forcePrimary bool) (*Client, error) {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
-		return nil, errClusterClosed
+		return nil, ErrClusterClosed
 	}
 
 	// Fast path: write flag set — route to primary for read-after-write consistency.
 	if forcePrimary {
 		if c.primary == nil || c.primary.state != NodeStateReady {
 			c.mu.RUnlock()
-			return nil, errPrimaryUnavailable
+			return nil, ErrPrimaryUnavailable
 		}
 		client := c.primary.client
 		c.mu.RUnlock()
@@ -61,7 +60,7 @@ func (c *Cluster) readerClient(forcePrimary bool) (*Client, error) {
 	if primaryClient != nil {
 		return primaryClient, nil
 	}
-	return nil, errNoReadableNode
+	return nil, ErrNoReadableNode
 }
 
 // WriteClient 返回用于写操作的主库客户端；
@@ -70,19 +69,18 @@ func (c *Cluster) WriteClient() (*Client, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.closed {
-		return nil, errClusterClosed
+		return nil, ErrClusterClosed
 	}
 	if c.primary == nil || c.primary.state == NodeStateDown {
-		return nil, errPrimaryUnavailable
+		return nil, ErrPrimaryUnavailable
 	}
 	return c.primary.client, nil
 }
 
-// WriteDB returns the primary *gorm.DB for write operations.
+// WriteDB 返回用于写操作的主库 *gorm.DB。
 //
-// Deprecated: Use WriteClient() instead to handle errors explicitly.
-// This method returns nil when the primary is unavailable, which may
-// cause nil-pointer panics if the caller does not check.
+// Deprecated: 请改用 WriteClient() 显式处理错误。
+// 主库不可用时本方法返回 nil，调用方不检查会引发空指针 panic。
 func (c *Cluster) WriteDB() *gorm.DB {
 	client, _ := c.WriteClient()
 	if client == nil {
@@ -91,11 +89,10 @@ func (c *Cluster) WriteDB() *gorm.DB {
 	return client.DB()
 }
 
-// ReadDB returns a replica *gorm.DB for read operations.
+// ReadDB 返回用于读操作的副本 *gorm.DB。
 //
-// Deprecated: Use ReaderClient() instead to handle errors explicitly.
-// This method returns nil when no readable node is available, which may
-// cause nil-pointer panics if the caller does not check.
+// Deprecated: 请改用 ReaderClient() 显式处理错误。
+// 没有可读节点时本方法返回 nil，调用方不检查会引发空指针 panic。
 func (c *Cluster) ReadDB() *gorm.DB {
 	client, _ := c.ReaderClient()
 	if client == nil {
@@ -104,10 +101,9 @@ func (c *Cluster) ReadDB() *gorm.DB {
 	return client.DB()
 }
 
-// ReadDBCtx returns a *gorm.DB for reads, routing to primary when ctx
-// carries a write flag set by [ContextWithWriteFlag].
+// ReadDBCtx 返回用于读操作的 *gorm.DB；ctx 带写标记（[ContextWithWriteFlag]）时路由主库。
 //
-// Deprecated: Use ReaderClientCtx() instead to handle errors explicitly.
+// Deprecated: 请改用 ReaderClientCtx() 显式处理错误。
 func (c *Cluster) ReadDBCtx(ctx context.Context) *gorm.DB {
 	client, _ := c.ReaderClientCtx(ctx)
 	if client == nil {
@@ -116,8 +112,8 @@ func (c *Cluster) ReadDBCtx(ctx context.Context) *gorm.DB {
 	return client.DB()
 }
 
-// MustWriteDB returns the primary *gorm.DB or panics if unavailable.
-// Use only when a nil-pointer panic is acceptable (e.g. startup wiring).
+// MustWriteDB 返回主库 *gorm.DB，不可用时 panic。
+// 仅适用于可接受 panic 的场景（如启动期 wiring）。
 func (c *Cluster) MustWriteDB() *gorm.DB {
 	client, err := c.WriteClient()
 	if err != nil {
@@ -126,8 +122,8 @@ func (c *Cluster) MustWriteDB() *gorm.DB {
 	return client.DB()
 }
 
-// MustReadDB returns a replica *gorm.DB or panics if unavailable.
-// Use only when a nil-pointer panic is acceptable (e.g. startup wiring).
+// MustReadDB 返回副本 *gorm.DB，没有可读节点时 panic。
+// 仅适用于可接受 panic 的场景（如启动期 wiring）。
 func (c *Cluster) MustReadDB() *gorm.DB {
 	client, err := c.ReaderClient()
 	if err != nil {

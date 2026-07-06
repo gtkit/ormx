@@ -517,8 +517,8 @@ func TestMarkPrimaryDownStopsWritesWithoutAutomaticPromotion(t *testing.T) {
 	}
 
 	writer, err := cluster.WriteClient()
-	if !errors.Is(err, errPrimaryUnavailable) {
-		t.Fatalf("expected errPrimaryUnavailable, got %v", err)
+	if !errors.Is(err, ErrPrimaryUnavailable) {
+		t.Fatalf("expected ErrPrimaryUnavailable, got %v", err)
 	}
 	if writer != nil {
 		t.Fatalf("expected nil writer when primary is down")
@@ -629,8 +629,8 @@ func TestReaderClientWithoutFallbackReturnsError(t *testing.T) {
 	}
 
 	client, err := cluster.ReaderClient()
-	if !errors.Is(err, errNoReadableNode) {
-		t.Fatalf("expected errNoReadableNode, got %v", err)
+	if !errors.Is(err, ErrNoReadableNode) {
+		t.Fatalf("expected ErrNoReadableNode, got %v", err)
 	}
 	if client != nil {
 		t.Fatalf("expected nil reader client when no readable node")
@@ -789,8 +789,8 @@ func TestReaderClientCtxReturnsPrimaryUnavailableWhenWriteFlagSetAndPrimaryDown(
 	}
 
 	client, readErr := cluster.ReaderClientCtx(ContextWithWriteFlag(context.Background()))
-	if !errors.Is(readErr, errPrimaryUnavailable) {
-		t.Fatalf("expected errPrimaryUnavailable, got %v", readErr)
+	if !errors.Is(readErr, ErrPrimaryUnavailable) {
+		t.Fatalf("expected ErrPrimaryUnavailable, got %v", readErr)
 	}
 	if client != nil {
 		t.Fatalf("expected nil client, got %v", client)
@@ -824,8 +824,8 @@ func TestReaderClientCtxReturnsPrimaryUnavailableWhenWriteFlagSetAndPrimaryDrain
 	cluster.mu.Unlock()
 
 	client, readErr := cluster.ReaderClientCtx(ContextWithWriteFlag(context.Background()))
-	if !errors.Is(readErr, errPrimaryUnavailable) {
-		t.Fatalf("expected errPrimaryUnavailable, got %v", readErr)
+	if !errors.Is(readErr, ErrPrimaryUnavailable) {
+		t.Fatalf("expected ErrPrimaryUnavailable, got %v", readErr)
 	}
 	if client != nil {
 		t.Fatalf("expected nil client, got %v", client)
@@ -866,11 +866,11 @@ func TestClusterOperationsAfterCloseReturnError(t *testing.T) {
 		t.Fatalf("Close() error = %v", closeErr)
 	}
 
-	// Every public method should return errClusterClosed after Close().
+	// Every public method should return ErrClusterClosed after Close().
 	assertClosed := func(name string, got error) {
 		t.Helper()
-		if !errors.Is(got, errClusterClosed) {
-			t.Fatalf("%s after close: expected errClusterClosed, got %v", name, got)
+		if !errors.Is(got, ErrClusterClosed) {
+			t.Fatalf("%s after close: expected ErrClusterClosed, got %v", name, got)
 		}
 	}
 
@@ -887,7 +887,7 @@ func TestClusterOperationsAfterCloseReturnError(t *testing.T) {
 	_, switchErr := cluster.SwitchPrimary(context.Background(), "replica")
 	assertClosed("SwitchPrimary", switchErr)
 
-	// Double close should also return errClusterClosed.
+	// Double close should also return ErrClusterClosed.
 	assertClosed("double Close", cluster.Close())
 }
 
@@ -932,8 +932,8 @@ func TestRecoverReplicaReturnsClusterClosedWhenClosedDuringPing(t *testing.T) {
 	close(release)
 
 	recoverErr := <-resultCh
-	if !errors.Is(recoverErr, errClusterClosed) {
-		t.Fatalf("expected errClusterClosed, got %v", recoverErr)
+	if !errors.Is(recoverErr, ErrClusterClosed) {
+		t.Fatalf("expected ErrClusterClosed, got %v", recoverErr)
 	}
 }
 
@@ -983,8 +983,8 @@ func TestSwitchPrimaryReturnsClusterClosedWhenClosedDuringPing(t *testing.T) {
 	close(release)
 
 	result := <-resultCh
-	if !errors.Is(result.err, errClusterClosed) {
-		t.Fatalf("expected errClusterClosed, got %v", result.err)
+	if !errors.Is(result.err, ErrClusterClosed) {
+		t.Fatalf("expected ErrClusterClosed, got %v", result.err)
 	}
 }
 
@@ -1030,8 +1030,8 @@ func TestSwitchPrimaryFastPathReturnsClusterClosedWhenClosedDuringPingError(t *t
 	close(release)
 
 	result := <-resultCh
-	if !errors.Is(result.err, errClusterClosed) {
-		t.Fatalf("expected errClusterClosed, got %v", result.err)
+	if !errors.Is(result.err, ErrClusterClosed) {
+		t.Fatalf("expected ErrClusterClosed, got %v", result.err)
 	}
 }
 
@@ -1074,8 +1074,8 @@ func TestSwitchPrimaryFastPathReturnsClusterClosedWhenClosedAfterSuccessfulPing(
 	close(release)
 
 	result := <-resultCh
-	if !errors.Is(result.err, errClusterClosed) {
-		t.Fatalf("expected errClusterClosed, got %v", result.err)
+	if !errors.Is(result.err, ErrClusterClosed) {
+		t.Fatalf("expected ErrClusterClosed, got %v", result.err)
 	}
 }
 
@@ -1096,8 +1096,8 @@ func TestClusterWithTxAfterCloseReturnError(t *testing.T) {
 	_ = cluster.Close()
 
 	txErr := cluster.WithTx(context.Background(), func(_ *gorm.DB) error { return nil })
-	if !errors.Is(txErr, errClusterClosed) {
-		t.Fatalf("WithTx after close: expected errClusterClosed, got %v", txErr)
+	if !errors.Is(txErr, ErrClusterClosed) {
+		t.Fatalf("WithTx after close: expected ErrClusterClosed, got %v", txErr)
 	}
 }
 

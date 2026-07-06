@@ -206,8 +206,9 @@ if err != nil {
 }
 defer cluster.Close() // 统一关闭全部节点
 
-// 周期健康巡检：探活失败的节点标记 down，恢复后自动回到读池
-go cluster.RunHealthLoop(ctx, 10*time.Second)
+// 周期健康巡检：探活失败的节点标记 down，恢复后自动回到读池。
+// RunHealthLoop 返回 error（interval ≤ 0 或集群已关闭），自起 goroutine 时需显式处理
+go func() { _ = cluster.RunHealthLoop(ctx, 10*time.Second) }()
 
 writeClient, err := cluster.WriteClient()      // 主库
 readClient, err := cluster.ReaderClientCtx(ctx) // 副本轮询，感知写后读窗口
@@ -242,7 +243,7 @@ cluster, err := ormx.OpenClusterWithOptions(ctx, primaryCfg, []ormx.Config{repli
 | `HealthCheck(ctx)` | 并行探活所有节点，返回 `ClusterHealthReport`（up / degraded / down） |
 | `Refresh(ctx)` | 探活并更新节点状态（`RunHealthLoop` 内部周期调用的就是它） |
 | `RunHealthLoop(ctx, interval)` | 周期巡检，ctx 取消时退出；由调用方自起 goroutine |
-| `DrainReplica(name, cause)` | 把副本标记为 draining，摘出读池（发版、维护窗口用） |
+| `DrainReplica(name, cause)` | 把副本标记为 draining，摘出读池（发版、维护窗口用）。注意非长期粘性：副本探活失败转 down 后，恢复时会被健康巡检自动拉回读池；长期摘除需暂停健康循环 |
 | `RecoverReplica(ctx, name)` | Ping 通过后把副本恢复为 ready |
 | `MarkPrimaryDown(cause)` | 把主库标记 down（注意：后续 Refresh Ping 成功会自动恢复 Ready） |
 | `SwitchPrimary(ctx, name)` | 把指定副本提升为主库，旧主库降级为 draining 副本 |
@@ -251,6 +252,16 @@ cluster, err := ormx.OpenClusterWithOptions(ctx, primaryCfg, []ormx.Config{repli
 | `Close()` | 关闭所有节点（去重，共享 Client 只关一次） |
 
 `WriteDB()` / `ReadDB()` / `ReadDBCtx()` 已标记 Deprecated（不可用时返回 nil，易引发空指针），新代码请用对应的 `*Client` 版本。
+
+#### 路由错误判断
+
+集群读写路由失败可用 `errors.Is` 区分类型：
+
+| 错误 | 含义 |
+|------|------|
+| `ormx.ErrNoReadableNode` | 没有可读节点（副本全部不可读，且回退主库被关闭或主库也不可读） |
+| `ormx.ErrPrimaryUnavailable` | 主库不可用（不存在或处于 down 状态） |
+| `ormx.ErrClusterClosed` | 集群已关闭 |
 
 #### 写后读一致性
 
@@ -361,5 +372,14 @@ client, err := ormx.Open(ctx,
 ## 发版
 
 ```bash
-make tag   # 自动 bump patch、打 tag 并推送；要求工作区干净
+make tag             # patch 发版：自动 bump patch、跑门禁、打 tag 并推送
+make tag BUMP=minor  # minor 发版（新增向后兼容的功能时）
+make tag BUMP=major  # major 发版（破坏性变更时）
 ```
+
+发版前提：工作区干净，且 `CHANGELOG.md` 已有目标版本条目（格式 `## [vX.Y.Z] - YYYY-MM-DD`）。
+门禁包含 vet、lint、race 测试、benchmark、覆盖率 ≥ 80% 与 govulncheck，任一失败即中止；
+tag message 自动携带该版本的 CHANGELOG 内容。
+
+> 注意：升 major 到 v2 及以上时，必须先把 `go.mod` 的 module path 改为 `github.com/gtkit/ormx/v2`
+> 并同步包内 import（Go Module 硬要求），`make tag BUMP=major` 不会自动处理这一步。
