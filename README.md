@@ -98,7 +98,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithGormLogger(log)` | GORM 默认 | 设置 `gormlogger.Interface`，通常配合 `zlogger.New(...)` 使用 |
+| `WithGormLogger(log)` | GORM 默认 Warn | 设置 `gormlogger.Interface`，通常配合 `zlogger.New(...)` 使用；未设置时输出错误 SQL 与超过 200ms 的慢 SQL |
 | `WithPrepareStmt(enabled)` | `false` | 开启 PreparedStatement 缓存 |
 | `WithPrepareStmtCache(maxSize, ttl)` | 不限制 | PreparedStatement 缓存容量与 TTL |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
@@ -112,6 +112,23 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithQueryFields(enabled)` | `false` | SELECT 时展开全部字段名而非 `*` |
 | `WithCreateBatchSize(n)` | `0` | 批量插入分批大小 |
 | `WithTranslateError(enabled)` | `false` | 把驱动错误翻译为 GORM 错误（如 `ErrDuplicatedKey`） |
+
+#### SQL 日志开关
+
+未传 `WithGormLogger` 时，GORM 使用默认 Warn 日志器向 stdout 输出错误 SQL 与超过 200ms 的慢 SQL，不记录正常快查询。日志通过 `gormlogger.Interface` 控制，不需要额外布尔开关：
+
+```go
+// 完全关闭 SQL 日志
+ormx.WithGormLogger(gormlogger.Discard)
+
+// 记录错误 SQL 与慢 SQL（GORM 默认行为）
+ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Warn))
+
+// 记录全部 SQL，仅建议开发环境使用
+ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
+```
+
+生产环境需要结构化日志时，建议使用下文的 `zlogger`，并开启参数化查询，避免 SQL 绑定参数进入日志。
 
 #### 启动与健康
 
@@ -336,6 +353,7 @@ client, err := ormx.Open(ctx,
         zlogger.WithLogLevel(gormlogger.Warn),
         zlogger.WithSlowThreshold(300*time.Millisecond),
         zlogger.WithIgnoreRecordNotFoundError(true),
+        zlogger.WithParameterizedQueries(true),
         zlogger.WithTraceIDExtractor(func(ctx context.Context) string {
             if id, ok := ctx.Value("X-Request-ID").(string); ok {
                 return id
@@ -354,7 +372,7 @@ client, err := ormx.Open(ctx,
 | `WithLogLevel(level)` | `gormlogger.Warn` | 日志级别（Silent / Error / Warn / Info） |
 | `WithSlowThreshold(d)` | `200ms` | 慢查询阈值；执行耗时超过即按 Warn 输出 `gorm slow query`，设为 `0` 关闭慢查询日志 |
 | `WithIgnoreRecordNotFoundError(enabled)` | `false` | 忽略 `gorm.ErrRecordNotFound`，不作为错误日志输出 |
-| `WithParameterizedQueries(enabled)` | `false` | 开启后日志中的 SQL 不带参数值（脱敏），只输出占位符语句 |
+| `WithParameterizedQueries(enabled)` | `false`（兼容默认） | 开启后日志中的 SQL 不带参数值（脱敏），只输出占位符语句；生产环境建议设为 `true` |
 | `WithTraceIDExtractor(fn)` | 无 | 从 context 提取 trace/request id，附加为 `trace_id` 字段，串联 SQL 日志与请求链路 |
 
 ### 输出行为
@@ -366,6 +384,8 @@ client, err := ormx.Open(ctx,
 3. 日志级别为 Info → `Info` 级 `gorm query`（全量 SQL 日志，仅建议开发环境开启）
 
 `LogMode` 遵循 GORM 约定返回调级别后的副本，可配合 `db.Session(&gorm.Session{Logger: ...})` 做局部调级。
+
+> 安全提示：`WithParameterizedQueries(false)` 会保留 SQL 绑定参数，可能把密码、Token 或其他敏感值写入日志，仅应在确认数据安全的受控排障环境使用。
 
 ---
 

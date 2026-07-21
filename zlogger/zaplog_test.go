@@ -55,6 +55,91 @@ func TestLogModeInfoLogsRegularQueries(t *testing.T) {
 	}
 }
 
+func TestTraceCallsSQLCallbackOnlyWhenLogging(t *testing.T) {
+	tests := []struct {
+		name        string
+		options     []ormzap.Option
+		elapsed     time.Duration
+		err         error
+		wantCalls   int
+		wantEntries int
+	}{
+		{
+			name: "warn fast query",
+			options: []ormzap.Option{
+				ormzap.WithLogLevel(gormlogger.Warn),
+				ormzap.WithSlowThreshold(time.Hour),
+			},
+			wantCalls:   0,
+			wantEntries: 0,
+		},
+		{
+			name: "ignored record not found",
+			options: []ormzap.Option{
+				ormzap.WithLogLevel(gormlogger.Warn),
+				ormzap.WithIgnoreRecordNotFoundError(true),
+			},
+			err:         gorm.ErrRecordNotFound,
+			wantCalls:   0,
+			wantEntries: 0,
+		},
+		{
+			name: "error query",
+			options: []ormzap.Option{
+				ormzap.WithLogLevel(gormlogger.Error),
+			},
+			err:         errors.New("boom"),
+			wantCalls:   1,
+			wantEntries: 1,
+		},
+		{
+			name: "slow query",
+			options: []ormzap.Option{
+				ormzap.WithLogLevel(gormlogger.Warn),
+				ormzap.WithSlowThreshold(time.Millisecond),
+			},
+			elapsed:     time.Second,
+			wantCalls:   1,
+			wantEntries: 1,
+		},
+		{
+			name: "info query",
+			options: []ormzap.Option{
+				ormzap.WithLogLevel(gormlogger.Info),
+				ormzap.WithSlowThreshold(time.Hour),
+			},
+			wantCalls:   1,
+			wantEntries: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zap.DebugLevel)
+			options := append([]ormzap.Option{ormzap.WithLogger(zap.New(core))}, tt.options...)
+			logger := ormzap.New(options...)
+			calls := 0
+
+			logger.Trace(
+				context.Background(),
+				time.Now().Add(-tt.elapsed),
+				func() (string, int64) {
+					calls++
+					return "SELECT 1", 1
+				},
+				tt.err,
+			)
+
+			if calls != tt.wantCalls {
+				t.Fatalf("SQL callback calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if entries := logs.All(); len(entries) != tt.wantEntries {
+				t.Fatalf("log entries = %d, want %d", len(entries), tt.wantEntries)
+			}
+		})
+	}
+}
+
 func TestIgnoreRecordNotFoundErrorSuppressesTrace(t *testing.T) {
 	core, logs := observer.New(zap.DebugLevel)
 

@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 明确 SQL 日志默认行为，以及通过 `gormlogger.Discard`、Warn、Info 和 `zlogger` 控制输出的配置方式
+- `zlogger` 推荐配置显式启用参数化查询，并补充绑定参数可能包含敏感信息的风险说明
+
+### Fixed
+
+- 修复 `zlogger` 在 Warn 级别遇到正常快查询时仍生成 SQL 字符串的问题，无日志快路径不再调用 SQL 回调
+- 修正包内 `Version` 与已发布的 `v1.1.1` 标签不一致的问题
+
+## [v1.1.1] - 2026-07-06
+
 ### Added
 
 - 新增 MIT LICENSE，pkg.go.dev 可正常展示模块文档
@@ -15,7 +27,6 @@
 ### Changed
 
 - 导出 API 的 GoDoc 统一为简体中文（语义不变）
-
 - 文档：`DrainReplica` 补充与健康巡检自动恢复的交互说明——draining 副本若探活失败被置为 down，恢复后会被自动拉回读池，长期摘除需暂停健康循环
 - 文档：明确 `Config` 从配置文件映射时须以 `DefaultConfig()`/`NewConfig()` 为基底，零值直接反序列化会使连接池配置被静默忽略
 

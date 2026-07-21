@@ -91,6 +91,7 @@ func (l *GormLogger) Error(ctx context.Context, msg string, data ...any) {
 // Trace 记录一次 SQL 执行：出错时（除被忽略的 gorm.ErrRecordNotFound 外）输出 Error 日志；
 // 慢查询阈值非 0 且耗时超过阈值时输出 Warn 慢查询日志；级别为 Info 时输出普通查询日志；
 // 级别为 Silent 时不输出。日志字段包含调用位置、耗时、SQL、影响行数及可选的 trace_id。
+// 无需输出日志时不会调用 fc，避免正常快查询产生 SQL 格式化开销。
 func (l *GormLogger) Trace(
 	ctx context.Context, begin time.Time,
 	fc func() (sql string, rowsAffected int64), err error,
@@ -100,18 +101,20 @@ func (l *GormLogger) Trace(
 	}
 
 	elapsed := time.Since(begin)
-	sql, rows := fc()
-
-	fields := l.traceFields(ctx, elapsed, sql, rows)
-
 	recordNotFoundIgnored := errors.Is(err, gorm.ErrRecordNotFound) && l.ignoreRecordNotFoundError
 
 	switch {
 	case err != nil && l.logLevel >= gormlogger.Error && !recordNotFoundIgnored:
+		sql, rows := fc()
+		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.getBase(ctx).Error("gorm query error", append(fields, zap.Error(err))...)
 	case l.slowThreshold != 0 && elapsed > l.slowThreshold && l.logLevel >= gormlogger.Warn:
+		sql, rows := fc()
+		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.getBase(ctx).Warn("gorm slow query", append(fields, zap.Duration("slow_threshold", l.slowThreshold))...)
 	case l.logLevel == gormlogger.Info:
+		sql, rows := fc()
+		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.getBase(ctx).Info("gorm query", fields...)
 	}
 }
