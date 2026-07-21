@@ -107,15 +107,15 @@ func (l *GormLogger) Trace(
 	case err != nil && l.logLevel >= gormlogger.Error && !recordNotFoundIgnored:
 		sql, rows := fc()
 		fields := l.traceFields(ctx, elapsed, sql, rows)
-		l.getBase(ctx).Error("gorm query error", append(fields, zap.Error(err))...)
+		l.base().Error("gorm query error", append(fields, zap.Error(err))...)
 	case l.slowThreshold != 0 && elapsed > l.slowThreshold && l.logLevel >= gormlogger.Warn:
 		sql, rows := fc()
 		fields := l.traceFields(ctx, elapsed, sql, rows)
-		l.getBase(ctx).Warn("gorm slow query", append(fields, zap.Duration("slow_threshold", l.slowThreshold))...)
+		l.base().Warn("gorm slow query", append(fields, zap.Duration("slow_threshold", l.slowThreshold))...)
 	case l.logLevel == gormlogger.Info:
 		sql, rows := fc()
 		fields := l.traceFields(ctx, elapsed, sql, rows)
-		l.getBase(ctx).Info("gorm query", fields...)
+		l.base().Info("gorm query", fields...)
 	}
 }
 
@@ -151,15 +151,6 @@ func (l *GormLogger) base() *zap.Logger {
 		return nopLogger
 	}
 	return l.zapLogger
-}
-
-// getBase returns the base logger, enriched with the trace ID from ctx if available.
-func (l *GormLogger) getBase(ctx context.Context) *zap.Logger {
-	logger := l.base()
-	if traceID := l.extractTraceID(ctx); traceID != "" {
-		return logger.With(zap.String("trace_id", traceID))
-	}
-	return logger
 }
 
 // getSugar returns the cached sugared logger, enriched with the trace ID from ctx if available.

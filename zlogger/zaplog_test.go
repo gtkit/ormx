@@ -230,6 +230,71 @@ func TestTraceLogsErrorAndTraceID(t *testing.T) {
 	}
 }
 
+func TestTraceTraceIDNotDuplicated(t *testing.T) {
+	const traceIDKey testContextKey = "trace_id"
+	extractor := ormzap.WithTraceIDExtractor(func(ctx context.Context) string {
+		value, _ := ctx.Value(traceIDKey).(string)
+		return value
+	})
+
+	tests := []struct {
+		name    string
+		options []ormzap.Option
+		elapsed time.Duration
+		err     error
+	}{
+		{
+			name:    "error query",
+			options: []ormzap.Option{ormzap.WithLogLevel(gormlogger.Error)},
+			elapsed: 50 * time.Millisecond,
+			err:     errors.New("boom"),
+		},
+		{
+			name:    "slow query",
+			options: []ormzap.Option{ormzap.WithLogLevel(gormlogger.Warn), ormzap.WithSlowThreshold(10 * time.Millisecond)},
+			elapsed: time.Second,
+		},
+		{
+			name:    "info query",
+			options: []ormzap.Option{ormzap.WithLogLevel(gormlogger.Info), ormzap.WithSlowThreshold(time.Hour)},
+			elapsed: 50 * time.Millisecond,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zap.DebugLevel)
+			options := append([]ormzap.Option{ormzap.WithLogger(zap.New(core)), extractor}, tt.options...)
+			logger := ormzap.New(options...)
+
+			ctx := context.WithValue(context.Background(), traceIDKey, "req-1")
+			logger.Trace(
+				ctx,
+				time.Now().Add(-tt.elapsed),
+				func() (string, int64) { return "SELECT 1", 1 },
+				tt.err,
+			)
+
+			entries := logs.All()
+			if len(entries) != 1 {
+				t.Fatalf("expected one log entry, got %d", len(entries))
+			}
+			count := 0
+			for _, field := range entries[0].Context {
+				if field.Key == "trace_id" {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("expected exactly one trace_id field, got %d", count)
+			}
+			if got := entries[0].ContextMap()["trace_id"]; got != "req-1" {
+				t.Fatalf("expected trace_id req-1, got %#v", got)
+			}
+		})
+	}
+}
+
 func TestTraceSlowQueryWithoutRowsField(t *testing.T) {
 	core, logs := observer.New(zap.DebugLevel)
 	logger := ormzap.New(

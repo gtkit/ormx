@@ -34,6 +34,7 @@ func TestOptionsApply(t *testing.T) {
 		}, [2]any{64, time.Minute}},
 		{"WithSkipDefaultTransaction", WithSkipDefaultTransaction(true), func(c Config) any { return c.GORM.SkipDefaultTransaction }, true},
 		{"WithGormLogger", WithGormLogger(logger), func(c Config) any { return c.GORM.Logger == logger }, true},
+		{"WithZlogger", WithZlogger(), func(c Config) any { return c.GORM.Logger != nil }, true},
 		{"WithNowFunc", WithNowFunc(nowFunc), func(c Config) any { return c.GORM.NowFunc != nil }, true},
 		{"WithNamingStrategy", WithNamingStrategy(schema.NamingStrategy{TablePrefix: "t_"}), func(c Config) any { return c.GORM.NamingStrategy.TablePrefix }, "t_"},
 		{"WithTablePrefix", WithTablePrefix("app_"), func(c Config) any { return c.GORM.NamingStrategy.TablePrefix }, "app_"},

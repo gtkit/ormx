@@ -5,6 +5,8 @@ import (
 
 	gormlogger "gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
+
+	"github.com/gtkit/ormx/zlogger"
 )
 
 // Option 是修改 Config 的函数式配置项，配合 NewConfig、Open 等入口使用。
@@ -214,6 +216,16 @@ func WithSkipDefaultTransaction(skip bool) Option {
 func WithGormLogger(log gormlogger.Interface) Option {
 	return func(c *Config) {
 		c.GORM.Logger = log
+	}
+}
+
+// WithZlogger 用给定的 zlogger.Option 构造 GORM 日志器并注入，
+// 等价于 WithGormLogger(zlogger.New(opts...))，省去调用方显式调用 zlogger.New。
+// 不传任何 Option 时使用 zlogger 默认配置（no-op logger、慢查询 200ms、级别 Warn）。
+// 需要注入自定义 gormlogger.Interface 实现时改用 WithGormLogger。
+func WithZlogger(opts ...zlogger.Option) Option {
+	return func(c *Config) {
+		c.GORM.Logger = zlogger.New(opts...)
 	}
 }
 

@@ -98,7 +98,8 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithGormLogger(log)` | GORM 默认 Warn | 设置 `gormlogger.Interface`，通常配合 `zlogger.New(...)` 使用；未设置时输出错误 SQL 与超过 200ms 的慢 SQL |
+| `WithGormLogger(log)` | GORM 默认 Warn | 设置任意 `gormlogger.Interface` 实现；未设置时输出错误 SQL 与超过 200ms 的慢 SQL |
+| `WithZlogger(opts...)` | 同上 | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`，详见下文 zlogger 章节 |
 | `WithPrepareStmt(enabled)` | `false` | 开启 PreparedStatement 缓存 |
 | `WithPrepareStmtCache(maxSize, ttl)` | 不限制 | PreparedStatement 缓存容量与 TTL |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
@@ -334,7 +335,7 @@ ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client, role ormx.NodeRol
 
 ## zlogger（GORM 的 zap 日志适配）
 
-`zlogger.New` 返回一个实现 `gormlogger.Interface` 的日志器，通过 `ormx.WithGormLogger` 接入：
+`zlogger` 是实现 `gormlogger.Interface` 的 zap 日志器。用 `ormx.WithZlogger` 一步接入，无需显式调用 `zlogger.New`：
 
 ```go
 import (
@@ -348,7 +349,7 @@ zlog, _ := zap.NewProduction()
 
 client, err := ormx.Open(ctx,
     // ...连接选项...
-    ormx.WithGormLogger(zlogger.New(
+    ormx.WithZlogger(
         zlogger.WithLogger(zlog),
         zlogger.WithLogLevel(gormlogger.Warn),
         zlogger.WithSlowThreshold(300*time.Millisecond),
@@ -360,9 +361,11 @@ client, err := ormx.Open(ctx,
             }
             return ""
         }),
-    )),
+    ),
 )
 ```
+
+`WithZlogger(opts...)` 等价于 `WithGormLogger(zlogger.New(opts...))`。需要注入自定义 `gormlogger.Interface` 实现（或已构造好的日志器）时，仍用 `WithGormLogger`。
 
 ### 选项函数
 

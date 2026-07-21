@@ -4,6 +4,16 @@
 
 格式参考 Keep a Changelog，版本遵循语义化版本。
 
+## [Unreleased]
+
+### Added
+
+- 新增 `WithZlogger(opts ...zlogger.Option)`，一步注入 zap SQL 日志器，等价 `WithGormLogger(zlogger.New(opts...))`，无需显式调用 `zlogger.New`
+
+### Fixed
+
+- 修复 `zlogger` 在配置 `TraceIDExtractor` 时，错误、慢查询与全量查询日志中 `trace_id` 字段重复出现的问题
+
 ## [v1.1.2] - 2026-07-21
 
 ### Changed
