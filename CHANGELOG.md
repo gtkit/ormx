@@ -4,7 +4,7 @@
 
 格式参考 Keep a Changelog，版本遵循语义化版本。
 
-## [Unreleased]
+## [v1.1.2]
 
 ### Changed
 
