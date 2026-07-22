@@ -19,12 +19,9 @@ const (
 	HealthStatusDown     HealthStatus = "down"
 	HealthStatusDegraded HealthStatus = "degraded"
 	RoleStandalone       NodeRole     = "standalone"
-	RolePrimary          NodeRole     = "primary"
-	RoleReplica          NodeRole     = "replica"
 
-	NodeStateReady    NodeState = "ready"
-	NodeStateDraining NodeState = "draining"
-	NodeStateDown     NodeState = "down"
+	NodeStateReady NodeState = "ready"
+	NodeStateDown  NodeState = "down"
 )
 
 // NodeRole 表示节点在集群中的角色。
@@ -74,13 +71,13 @@ func (r HealthReport) Healthy() bool {
 
 // Name 返回客户端名称，未在 Config 中配置时返回 "default"。
 func (c *Client) Name() string {
-	return c.effectiveName("default")
+	return c.effectiveName()
 }
 
 // HealthCheck 以 RoleStandalone 角色执行一次健康检查（Ping 加可选的 HealthProbe）并返回报告。
 // 当 ctx 未设置 deadline 时使用内置默认超时，避免无限阻塞。
 func (c *Client) HealthCheck(ctx context.Context) HealthReport {
-	return c.healthCheck(ctx, c.effectiveName("default"), RoleStandalone)
+	return c.healthCheck(ctx, c.effectiveName(), RoleStandalone)
 }
 
 // StatsSnapshot 返回当前连接池统计信息的快照。
@@ -90,7 +87,7 @@ func (c *Client) StatsSnapshot() DBStatsSnapshot {
 
 // Metrics 返回连接池的指标采样列表，标签含客户端名称与 RoleStandalone 角色。
 func (c *Client) Metrics() []MetricSample {
-	return c.metrics(c.effectiveName("default"), RoleStandalone)
+	return c.metrics(c.effectiveName(), RoleStandalone)
 }
 
 func (c *Client) healthCheck(ctx context.Context, name string, role NodeRole) HealthReport {
@@ -134,14 +131,11 @@ func (c *Client) metrics(name string, role NodeRole) []MetricSample {
 	return c.StatsSnapshot().metrics(metricLabels(name, role))
 }
 
-func (c *Client) effectiveName(fallback string) string {
-	if c == nil {
-		return fallback
-	}
-	if c.config.Name != "" {
+func (c *Client) effectiveName() string {
+	if c != nil && c.config.Name != "" {
 		return c.config.Name
 	}
-	return fallback
+	return "default"
 }
 
 func newDBStatsSnapshot(stats sql.DBStats) DBStatsSnapshot {

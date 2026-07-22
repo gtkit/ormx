@@ -4,6 +4,17 @@
 
 格式参考 Keep a Changelog，版本遵循语义化版本。
 
+## [Unreleased]
+
+### ⚠ 破坏性变更
+
+- 移除集群读写分离能力（`Cluster` 及其全部方法、`OpenCluster` / `NewCluster` / `NewClusterWithOptions`、`ClusterOption`、`Node`、`ClusterHealthReport`、`ErrNoReadableNode` / `ErrPrimaryUnavailable` / `ErrClusterClosed`），以及写后读一致性窗口（`ContextWithWriteFlag` / `ContextWithWriteWindow` / `ContextClearWriteFlag` / `HasWriteFlag`）。需要读写分离的下游请改用 `gorm.io/plugin/dbresolver`，并复用 `Client.HealthCheck` 做探活。
+- 移除仅集群使用的枚举值 `RolePrimary`、`RoleReplica`、`NodeStateDraining`。
+
+### Removed
+
+- 删除集群相关源码与测试，主包回归单机连接、事务与健康/可观测能力；单机 `Client.HealthCheck` / `StatsSnapshot` / `Metrics` 及 `WithHealthProbe` 保持不变
+
 ## [v1.1.3] - 2026-07-21
 
 ### Added

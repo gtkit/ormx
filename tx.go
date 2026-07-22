@@ -121,7 +121,7 @@ func (c *Client) withTxRetry(
 			sleep := retryBackoff(attempt, baseWait, maxWait)
 			if observer := c.config.TxRetryObserver; observer != nil {
 				observer(ctx, TxRetryEvent{
-					ClientName: c.effectiveName("default"),
+					ClientName: c.effectiveName(),
 					Attempt:    attempt + 1,
 					MaxRetries: maxRetries,
 					Wait:       sleep,

@@ -466,7 +466,7 @@ func TestDBStatsSnapshotUtilization(t *testing.T) {
 	}
 	snapshot.Utilization = float64(snapshot.InUse) / float64(snapshot.MaxOpenConnections)
 
-	metrics := snapshot.metrics(metricLabels("orders", RolePrimary))
+	metrics := snapshot.metrics(metricLabels("orders", RoleStandalone))
 	if metrics[9].Value != 0.4 {
 		t.Fatalf("expected utilization 0.4, got %v", metrics[9].Value)
 	}

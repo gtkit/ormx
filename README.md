@@ -4,7 +4,7 @@
 
 | 包 | 用途 |
 |----|------|
-| `github.com/gtkit/ormx` | 基于 GORM 的客户端——连接管理、集群读写分离、健康探活、事务死锁自动重试、写后读一致性窗口 |
+| `github.com/gtkit/ormx` | 基于 GORM 的客户端——连接与连接池配置、事务死锁自动重试、单机健康探活与可观测 |
 | `github.com/gtkit/ormx/zlogger` | GORM 的 zap 日志适配——慢查询阈值、trace id 提取、SQL 参数脱敏 |
 
 > 面向 go-jet 的 SQL-first 封装已分离为独立模块 [`github.com/gtkit/jetx`](https://github.com/gtkit/jetx)。
@@ -210,101 +210,9 @@ orderRepo := repo.NewOrderRepo(orderDB.DB())
 userRepo  := repo.NewUserRepo(userDB.DB())
 ```
 
-### 集群（读写分离 / 故障切换）
-
-把一个主库和若干副本组成 `Cluster`：写请求路由到主库，读请求在健康副本间轮询，副本全挂时可回退主库。
-
-```go
-primary, _ := ormx.Open(ctx, ormx.WithName("primary") /* ... */)
-replica, _ := ormx.Open(ctx, ormx.WithName("replica-1") /* ... */)
-
-cluster, err := ormx.NewCluster(primary, replica)
-if err != nil {
-    return err
-}
-defer cluster.Close() // 统一关闭全部节点
-
-// 周期健康巡检：探活失败的节点标记 down，恢复后自动回到读池。
-// RunHealthLoop 返回 error（interval ≤ 0 或集群已关闭），自起 goroutine 时需显式处理
-go func() { _ = cluster.RunHealthLoop(ctx, 10*time.Second) }()
-
-writeClient, err := cluster.WriteClient()      // 主库
-readClient, err := cluster.ReaderClientCtx(ctx) // 副本轮询，感知写后读窗口
-```
-
-也可以直接用配置一步打开（副本并行建连）：
-
-```go
-cluster, err := ormx.OpenClusterWithOptions(ctx, primaryCfg, []ormx.Config{replicaCfg1, replicaCfg2},
-    ormx.WithHealthCheckTimeout(3*time.Second),
-)
-```
-
-#### ClusterOption
-
-| Option | 默认值 | 说明 |
-|--------|--------|------|
-| `WithReadFallbackToPrimary(enabled)` | `true` | 所有副本不可读时读请求回退主库 |
-| `WithAutoRecoverReplicas(enabled)` | `true` | 健康巡检中 Ping 恢复的 down 副本自动回到读池 |
-| `WithHealthCheckTimeout(d)` | `5s` | 健康检查 Ping 的默认超时；调用方 context 有更短 deadline 时优先 |
-
-#### Cluster 常用方法
-
-| 方法 | 说明 |
-|------|------|
-| `WriteClient() (*Client, error)` | 取主库客户端，主库不可用时返回错误 |
-| `ReaderClient() (*Client, error)` | 在 ready 副本间轮询取读客户端 |
-| `ReaderClientCtx(ctx) (*Client, error)` | 同上，但 ctx 带写标记时强制路由主库（写后读一致性） |
-| `MustWriteDB()` / `MustReadDB()` | 直接取 `*gorm.DB`，不可用时 panic，仅适合启动期 wiring |
-| `WithTx(ctx, fn, txOpts...)` | 在主库上执行事务（含死锁重试） |
-| `WithReadTx(ctx, fn)` | 在读节点上执行只读事务（感知写标记） |
-| `HealthCheck(ctx)` | 并行探活所有节点，返回 `ClusterHealthReport`（up / degraded / down） |
-| `Refresh(ctx)` | 探活并更新节点状态（`RunHealthLoop` 内部周期调用的就是它） |
-| `RunHealthLoop(ctx, interval)` | 周期巡检，ctx 取消时退出；由调用方自起 goroutine |
-| `DrainReplica(name, cause)` | 把副本标记为 draining，摘出读池（发版、维护窗口用）。注意非长期粘性：副本探活失败转 down 后，恢复时会被健康巡检自动拉回读池；长期摘除需暂停健康循环 |
-| `RecoverReplica(ctx, name)` | Ping 通过后把副本恢复为 ready |
-| `MarkPrimaryDown(cause)` | 把主库标记 down（注意：后续 Refresh Ping 成功会自动恢复 Ready） |
-| `SwitchPrimary(ctx, name)` | 把指定副本提升为主库，旧主库降级为 draining 副本 |
-| `Nodes()` / `PrimaryNode()` / `ReplicaNodes()` | 节点状态快照 |
-| `Metrics()` | 全部节点的连接池指标 |
-| `Close()` | 关闭所有节点（去重，共享 Client 只关一次） |
-
-`WriteDB()` / `ReadDB()` / `ReadDBCtx()` 已标记 Deprecated（不可用时返回 nil，易引发空指针），新代码请用对应的 `*Client` 版本。
-
-#### 路由错误判断
-
-集群读写路由失败可用 `errors.Is` 区分类型：
-
-| 错误 | 含义 |
-|------|------|
-| `ormx.ErrNoReadableNode` | 没有可读节点（副本全部不可读，且回退主库被关闭或主库也不可读） |
-| `ormx.ErrPrimaryUnavailable` | 主库不可用（不存在或处于 down 状态） |
-| `ormx.ErrClusterClosed` | 集群已关闭 |
-
-#### 写后读一致性
-
-主从复制存在延迟，"写完立刻读"可能从副本读到旧数据。在写入成功后给 context 打写标记，后续读请求即被路由到主库：
-
-```go
-// 方式一：本次请求内一直读主库
-ctx = ormx.ContextWithWriteFlag(ctx)
-
-// 方式二：只在一个时间窗口内读主库，窗口过期自动恢复读副本（推荐）
-ctx = ormx.ContextWithWriteWindow(ctx, 500*time.Millisecond)
-
-readClient, err := cluster.ReaderClientCtx(ctx) // 命中写标记 → 主库
-```
-
-| 函数 | 说明 |
-|------|------|
-| `ContextWithWriteFlag(ctx)` | 标记写入，后续读路由主库（无过期） |
-| `ContextWithWriteWindow(ctx, ttl)` | 同上，但 ttl 过期后自动失效；ttl ≤ 0 等价于清除标记 |
-| `ContextClearWriteFlag(ctx)` | 清除写标记 |
-| `HasWriteFlag(ctx) bool` | 查询 ctx 当前是否带有效写标记 |
-
 ### 健康检查与指标
 
-单实例与集群均提供健康检查和 Prometheus 风格的指标采样：
+单机 Client 提供健康检查和 Prometheus 风格的指标采样：
 
 ```go
 report := client.HealthCheck(ctx)
@@ -314,20 +222,17 @@ if !report.Healthy() {
 
 for _, m := range client.Metrics() {
     // m.Name 形如 orm_db_open_connections / orm_db_wait_count_total ...
-    // m.Labels 含 name（实例名）与 role（standalone/primary/replica）
+    // m.Labels 含 name（实例名）与 role（standalone）
     gauge.With(m.Labels).Set(m.Value)
 }
 ```
 
-`WithHealthProbe` 可在 Ping 之外追加业务探针，例如校验副本只读：
+`WithHealthProbe` 可在 Ping 之外追加业务探针，例如执行一次轻量查询确认连接可用：
 
 ```go
 ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client, role ormx.NodeRole) error {
-    if role != ormx.RoleReplica {
-        return nil
-    }
-    var readOnly int
-    return c.DB().WithContext(ctx).Raw("SELECT @@read_only").Scan(&readOnly).Error
+    var one int
+    return c.DB().WithContext(ctx).Raw("SELECT 1").Scan(&one).Error
 })
 ```
 
