@@ -137,7 +137,7 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 |--------|--------|------|
 | `WithStartupPing(enabled)` | `true` | Open 时先 Ping 验证连通性 |
 | `WithStartupPingRetry(maxRetries, baseWait, maxWait)` | `0, 1s, 5s` | 启动 Ping 失败后的重试次数与退避区间 |
-| `WithHealthProbe(probe)` | 无 | 自定义健康探针，在 Ping 通过后追加执行（如检查只读标记、复制延迟） |
+| `WithHealthProbe(probe)` | 无 | 自定义健康探针，在 Ping 通过后追加执行（如跑一次轻量业务查询确认连接可用） |
 
 #### 事务观测
 
@@ -167,7 +167,7 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 | `PingContext(ctx) error` | 连通性检查 |
 | `Stats() sql.DBStats` / `StatsSnapshot()` | 连接池统计 |
 | `HealthCheck(ctx) HealthReport` | 健康检查（Ping + 自定义探针，默认 5s 超时） |
-| `Metrics() []MetricSample` | 连接池指标采样（`orm_db_*` 系列，带 name/role label） |
+| `Metrics() []MetricSample` | 连接池指标采样（`orm_db_*` 系列，带 name label） |
 | `WithTx` / `WithReadTx` | 事务，见下节 |
 | `Close() error` | 关闭连接池（`OpenWithDB` 包装的实例不关闭外部 `*sql.DB`） |
 
@@ -222,7 +222,7 @@ if !report.Healthy() {
 
 for _, m := range client.Metrics() {
     // m.Name 形如 orm_db_open_connections / orm_db_wait_count_total ...
-    // m.Labels 含 name（实例名）与 role（standalone）
+    // m.Labels 含 name（实例名）
     gauge.With(m.Labels).Set(m.Value)
 }
 ```
@@ -230,7 +230,7 @@ for _, m := range client.Metrics() {
 `WithHealthProbe` 可在 Ping 之外追加业务探针，例如执行一次轻量查询确认连接可用：
 
 ```go
-ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client, role ormx.NodeRole) error {
+ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client) error {
     var one int
     return c.DB().WithContext(ctx).Raw("SELECT 1").Scan(&one).Error
 })
@@ -301,9 +301,10 @@ client, err := ormx.Open(ctx,
 
 ```bash
 make tag             # patch 发版：自动 bump patch、跑门禁、打 tag 并推送
-make tag BUMP=minor  # minor 发版（新增向后兼容的功能时）
-make tag BUMP=major  # major 发版（破坏性变更时）
+make tag BUMP=minor  # minor 发版（新增向后兼容功能，或按本项目策略承载破坏性变更）
 ```
+
+本项目只维护 `v1`，不发 `major`/`v2`（`make tag BUMP=major` 会被拒绝）；破坏性变更按 MINOR 发布并在 `CHANGELOG.md` 以 **⚠ 破坏性变更** 标注。
 
 发版前提：工作区干净，且 `CHANGELOG.md` 已有目标版本条目（格式 `## [vX.Y.Z] - YYYY-MM-DD`）。
 门禁包含 vet、lint、race 测试、benchmark、覆盖率 ≥ 80% 与 govulncheck，任一失败即中止；

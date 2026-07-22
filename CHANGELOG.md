@@ -6,14 +6,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- 导出哨兵错误 `ErrAddressRequired`（原未导出），调用方可用 `errors.Is` 判定 Open 因缺少连接地址而失败
+
 ### ⚠ 破坏性变更
 
 - 移除集群读写分离能力（`Cluster` 及其全部方法、`OpenCluster` / `NewCluster` / `NewClusterWithOptions`、`ClusterOption`、`Node`、`ClusterHealthReport`、`ErrNoReadableNode` / `ErrPrimaryUnavailable` / `ErrClusterClosed`），以及写后读一致性窗口（`ContextWithWriteFlag` / `ContextWithWriteWindow` / `ContextClearWriteFlag` / `HasWriteFlag`）。需要读写分离的下游请改用 `gorm.io/plugin/dbresolver`，并复用 `Client.HealthCheck` 做探活。
-- 移除仅集群使用的枚举值 `RolePrimary`、`RoleReplica`、`NodeStateDraining`。
+- 健康模型收敛为单机：移除 `NodeRole` / `NodeState` 类型及 `RoleStandalone` / `HealthStatusDegraded` 等枚举值；`HealthReport` 去掉 `Role`、`State` 字段（`State` 可由 `Status` 推导）；`HealthProbeFunc` 去掉 `role` 参数，签名变为 `func(ctx context.Context, client *Client) error`；连接池指标不再附带 `role` 标签。
+- `PoolConfig` 字段由值类型改为指针（`*int` / `*time.Duration`）：`nil` 表示不设置、保持 database/sql 默认，非 `nil`（含 0）表示显式应用。修复直接结构体赋值或 JSON/YAML 映射连接池参数时因内部标记未置位而静默失效的问题；`WithMaxOpenConns` 等 Option 用法不变。
 
 ### Removed
 
 - 删除集群相关源码与测试，主包回归单机连接、事务与健康/可观测能力；单机 `Client.HealthCheck` / `StatsSnapshot` / `Metrics` 及 `WithHealthProbe` 保持不变
+
+### Changed
+
+- 发版脚本 `make tag` 门禁补齐 golangci-lint、覆盖率 ≥ 80%、benchmark 与 govulncheck；README 发版说明移除 `make tag BUMP=major`（本项目只维护 v1，major 被脚本拒绝，破坏性变更按 MINOR 发布）
 
 ## [v1.1.3] - 2026-07-21
 

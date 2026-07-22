@@ -10,22 +10,11 @@ import (
 // HealthStatus 表示健康检查结果的状态。
 type HealthStatus string
 
-// NodeState 表示节点的运行状态。
-type NodeState string
-
-// 健康状态（HealthStatus）、节点角色（NodeRole）与节点状态（NodeState）的预定义枚举值。
+// 健康状态（HealthStatus）的预定义枚举值。
 const (
-	HealthStatusUp       HealthStatus = "up"
-	HealthStatusDown     HealthStatus = "down"
-	HealthStatusDegraded HealthStatus = "degraded"
-	RoleStandalone       NodeRole     = "standalone"
-
-	NodeStateReady NodeState = "ready"
-	NodeStateDown  NodeState = "down"
+	HealthStatusUp   HealthStatus = "up"
+	HealthStatusDown HealthStatus = "down"
 )
-
-// NodeRole 表示节点在集群中的角色。
-type NodeRole string
 
 // DBStatsSnapshot 是 sql.DBStats 的快照，并附带连接利用率 Utilization
 // （InUse / MaxOpenConnections，MaxOpenConnections 为 0 时取 0）。
@@ -49,14 +38,12 @@ type MetricSample struct {
 	Labels map[string]string
 }
 
-// HealthProbeFunc 是自定义健康探测函数，在 Ping 成功后执行额外检查，返回非 nil 错误表示节点不健康。
-type HealthProbeFunc func(ctx context.Context, client *Client, role NodeRole) error
+// HealthProbeFunc 是自定义健康探测函数，在 Ping 成功后执行额外检查，返回非 nil 错误表示连接不健康。
+type HealthProbeFunc func(ctx context.Context, client *Client) error
 
 // HealthReport 描述一次健康检查的结果。
 type HealthReport struct {
 	Name      string
-	Role      NodeRole
-	State     NodeState
 	Status    HealthStatus
 	CheckedAt time.Time
 	Duration  time.Duration
@@ -74,10 +61,10 @@ func (c *Client) Name() string {
 	return c.effectiveName()
 }
 
-// HealthCheck 以 RoleStandalone 角色执行一次健康检查（Ping 加可选的 HealthProbe）并返回报告。
+// HealthCheck 执行一次健康检查（Ping 加可选的 HealthProbe）并返回报告。
 // 当 ctx 未设置 deadline 时使用内置默认超时，避免无限阻塞。
 func (c *Client) HealthCheck(ctx context.Context) HealthReport {
-	return c.healthCheck(ctx, c.effectiveName(), RoleStandalone)
+	return c.healthCheck(ctx, c.effectiveName())
 }
 
 // StatsSnapshot 返回当前连接池统计信息的快照。
@@ -85,12 +72,12 @@ func (c *Client) StatsSnapshot() DBStatsSnapshot {
 	return newDBStatsSnapshot(c.sqlDB.Stats())
 }
 
-// Metrics 返回连接池的指标采样列表，标签含客户端名称与 RoleStandalone 角色。
+// Metrics 返回连接池的指标采样列表，标签含客户端名称。
 func (c *Client) Metrics() []MetricSample {
-	return c.metrics(c.effectiveName(), RoleStandalone)
+	return c.metrics(c.effectiveName())
 }
 
-func (c *Client) healthCheck(ctx context.Context, name string, role NodeRole) HealthReport {
+func (c *Client) healthCheck(ctx context.Context, name string) HealthReport {
 	ctx = normalizeContext(ctx)
 
 	// Apply a default timeout if the caller did not set a deadline,
@@ -104,20 +91,16 @@ func (c *Client) healthCheck(ctx context.Context, name string, role NodeRole) He
 	start := time.Now()
 	report := HealthReport{
 		Name:      name,
-		Role:      role,
-		State:     NodeStateReady,
 		CheckedAt: start,
 		Status:    HealthStatusUp,
 	}
 
 	if err := c.PingContext(ctx); err != nil {
 		report.Status = HealthStatusDown
-		report.State = NodeStateDown
 		report.Error = err
 	} else if c.config.HealthProbe != nil {
-		if probeErr := c.config.HealthProbe(ctx, c, role); probeErr != nil {
+		if probeErr := c.config.HealthProbe(ctx, c); probeErr != nil {
 			report.Status = HealthStatusDown
-			report.State = NodeStateDown
 			report.Error = probeErr
 		}
 	}
@@ -127,8 +110,8 @@ func (c *Client) healthCheck(ctx context.Context, name string, role NodeRole) He
 	return report
 }
 
-func (c *Client) metrics(name string, role NodeRole) []MetricSample {
-	return c.StatsSnapshot().metrics(metricLabels(name, role))
+func (c *Client) metrics(name string) []MetricSample {
+	return c.StatsSnapshot().metrics(metricLabels(name))
 }
 
 func (c *Client) effectiveName() string {
@@ -173,10 +156,8 @@ func (s DBStatsSnapshot) metrics(labels map[string]string) []MetricSample {
 	}
 }
 
-func metricLabels(name string, role NodeRole) map[string]string {
-	labels := map[string]string{
-		"role": string(role),
-	}
+func metricLabels(name string) map[string]string {
+	labels := map[string]string{}
 	if name != "" {
 		labels["name"] = name
 	}

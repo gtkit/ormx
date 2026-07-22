@@ -21,7 +21,15 @@ tag:
 		echo "✗ 工作区不干净，发版前请先提交或清理："; git status --short; exit 1; \
 	fi; \
 	echo "▶️ go vet"; go vet ./...; \
+	echo "▶️ golangci-lint"; golangci-lint run $(LINT_TARGETS); \
 	echo "▶️ 测试 (race)"; go test -race -count=1 -timeout=5m ./...; \
+	echo "▶️ 覆盖率 ≥ 80%"; \
+	go test -coverprofile=coverage.out ./... >/dev/null; \
+	cov=$$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
+	rm -f coverage.out; \
+	awk -v c="$$cov" 'BEGIN { if (c+0 < 80) { printf "✗ 覆盖率 %.1f%% < 80%%\n", c+0; exit 1 } printf "✓ 覆盖率 %.1f%%\n", c+0 }'; \
+	echo "▶️ benchmark"; go test -bench=. -benchmem -run='^$$' ./... >/dev/null; \
+	echo "▶️ govulncheck"; govulncheck ./...; \
 	current=$$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' version.go | head -n1 | tr -d 'v'); \
 	if [ -z "$$current" ]; then echo "version not found in version.go"; exit 1; fi; \
 	maj=$$(echo $$current | cut -d. -f1); \

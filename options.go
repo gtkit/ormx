@@ -158,8 +158,7 @@ func WithDSNParams(params map[string]string) Option {
 // 取值透传给 [sql.DB.SetMaxOpenConns]：size ≤ 0 表示不限制。
 func WithMaxOpenConns(size int) Option {
 	return func(c *Config) {
-		c.Pool.MaxOpenConns = size
-		c.Pool.hasMaxOpenConns = true
+		c.Pool.MaxOpenConns = new(size)
 	}
 }
 
@@ -167,8 +166,7 @@ func WithMaxOpenConns(size int) Option {
 // 取值透传给 [sql.DB.SetMaxIdleConns]：size ≤ 0 表示不保留空闲连接。
 func WithMaxIdleConns(size int) Option {
 	return func(c *Config) {
-		c.Pool.MaxIdleConns = size
-		c.Pool.hasMaxIdleConns = true
+		c.Pool.MaxIdleConns = new(size)
 	}
 }
 
@@ -176,8 +174,7 @@ func WithMaxIdleConns(size int) Option {
 // 取值透传给 [sql.DB.SetConnMaxLifetime]：duration ≤ 0 表示连接不过期。
 func WithConnMaxLifetime(duration time.Duration) Option {
 	return func(c *Config) {
-		c.Pool.ConnMaxLifetime = duration
-		c.Pool.hasConnMaxLifetime = true
+		c.Pool.ConnMaxLifetime = new(duration)
 	}
 }
 
@@ -185,8 +182,7 @@ func WithConnMaxLifetime(duration time.Duration) Option {
 // 取值透传给 [sql.DB.SetConnMaxIdleTime]：duration ≤ 0 表示空闲连接不因闲置被关闭。
 func WithConnMaxIdleTime(duration time.Duration) Option {
 	return func(c *Config) {
-		c.Pool.ConnMaxIdleTime = duration
-		c.Pool.hasConnMaxIdleTime = true
+		c.Pool.ConnMaxIdleTime = new(duration)
 	}
 }
 

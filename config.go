@@ -75,18 +75,14 @@ type MySQLConfig struct {
 }
 
 // PoolConfig 描述 *sql.DB 连接池参数。
-// 每个字段仅在通过 DefaultConfig 或对应 Option 显式设置后才会应用到连接池，
-// 未设置的字段保持 database/sql 的原有行为。
+// 字段均为指针：nil 表示不设置、保持 database/sql 的原有行为；
+// 非 nil（含显式 0）表示应用该值到连接池。
+// 可直接赋值、经 JSON/YAML 映射，或用 DefaultConfig 与对应 Option 设置，效果一致。
 type PoolConfig struct {
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-	ConnMaxIdleTime time.Duration
-
-	hasMaxOpenConns    bool
-	hasMaxIdleConns    bool
-	hasConnMaxLifetime bool
-	hasConnMaxIdleTime bool
+	MaxOpenConns    *int           `json:"max_open_conns"     yaml:"max_open_conns"`
+	MaxIdleConns    *int           `json:"max_idle_conns"     yaml:"max_idle_conns"`
+	ConnMaxLifetime *time.Duration `json:"conn_max_lifetime"  yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime *time.Duration `json:"conn_max_idle_time" yaml:"conn_max_idle_time"`
 }
 
 // GORMConfig 描述透传给 gorm.Config 的行为配置，
@@ -161,14 +157,10 @@ func DefaultConfig() Config {
 			ParseTime:    true,
 		},
 		Pool: PoolConfig{
-			MaxOpenConns:       defaultMaxOpenConns,
-			MaxIdleConns:       defaultMaxIdleConns,
-			ConnMaxLifetime:    defaultConnMaxLifetime,
-			ConnMaxIdleTime:    defaultConnMaxIdleTime,
-			hasMaxOpenConns:    true,
-			hasMaxIdleConns:    true,
-			hasConnMaxLifetime: true,
-			hasConnMaxIdleTime: true,
+			MaxOpenConns:    new(defaultMaxOpenConns),
+			MaxIdleConns:    new(defaultMaxIdleConns),
+			ConnMaxLifetime: new(defaultConnMaxLifetime),
+			ConnMaxIdleTime: new(defaultConnMaxIdleTime),
 		},
 		GORM: GORMConfig{
 			NamingStrategy: defaultNamingStrategy(),
@@ -389,17 +381,17 @@ func (c Config) dialectorConfig(sqlDB *sql.DB, driverCfg *mysqldriver.Config) go
 }
 
 func applyPoolConfig(sqlDB *sql.DB, pool PoolConfig) {
-	if pool.hasMaxOpenConns {
-		sqlDB.SetMaxOpenConns(pool.MaxOpenConns)
+	if pool.MaxOpenConns != nil {
+		sqlDB.SetMaxOpenConns(*pool.MaxOpenConns)
 	}
-	if pool.hasMaxIdleConns {
-		sqlDB.SetMaxIdleConns(pool.MaxIdleConns)
+	if pool.MaxIdleConns != nil {
+		sqlDB.SetMaxIdleConns(*pool.MaxIdleConns)
 	}
-	if pool.hasConnMaxLifetime {
-		sqlDB.SetConnMaxLifetime(pool.ConnMaxLifetime)
+	if pool.ConnMaxLifetime != nil {
+		sqlDB.SetConnMaxLifetime(*pool.ConnMaxLifetime)
 	}
-	if pool.hasConnMaxIdleTime {
-		sqlDB.SetConnMaxIdleTime(pool.ConnMaxIdleTime)
+	if pool.ConnMaxIdleTime != nil {
+		sqlDB.SetConnMaxIdleTime(*pool.ConnMaxIdleTime)
 	}
 }
 

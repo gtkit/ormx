@@ -70,7 +70,7 @@ func TestClientHealthCheckAndMetrics(t *testing.T) {
 	client, err := OpenWithDB(
 		context.Background(),
 		sqlDB,
-		WithName("orders-primary"),
+		WithName("orders-db"),
 		WithStartupPing(false),
 		WithSkipInitializeWithVersion(true),
 		WithMaxOpenConns(20),
@@ -81,11 +81,8 @@ func TestClientHealthCheckAndMetrics(t *testing.T) {
 	}
 
 	report := client.HealthCheck(context.Background())
-	if report.Name != "orders-primary" {
-		t.Fatalf("expected report name orders-primary, got %q", report.Name)
-	}
-	if report.Role != RoleStandalone {
-		t.Fatalf("expected standalone role, got %q", report.Role)
+	if report.Name != "orders-db" {
+		t.Fatalf("expected report name orders-db, got %q", report.Name)
 	}
 	if report.Status != HealthStatusUp {
 		t.Fatalf("expected health up, got %q", report.Status)
@@ -104,11 +101,11 @@ func TestClientHealthCheckAndMetrics(t *testing.T) {
 	if len(metrics) != 10 {
 		t.Fatalf("expected 10 metric samples, got %d", len(metrics))
 	}
-	if metrics[0].Labels["name"] != "orders-primary" {
-		t.Fatalf("expected metric label name orders-primary, got %q", metrics[0].Labels["name"])
+	if metrics[0].Labels["name"] != "orders-db" {
+		t.Fatalf("expected metric label name orders-db, got %q", metrics[0].Labels["name"])
 	}
-	if metrics[0].Labels["role"] != string(RoleStandalone) {
-		t.Fatalf("expected role label standalone, got %q", metrics[0].Labels["role"])
+	if _, ok := metrics[0].Labels["role"]; ok {
+		t.Fatalf("expected no role label in single-node metrics, got %q", metrics[0].Labels["role"])
 	}
 }
 
@@ -139,7 +136,7 @@ func TestClientHealthCheckUsesCustomProbe(t *testing.T) {
 	sqlDB, state := newStubDB()
 	defer sqlDB.Close()
 
-	probeErr := errors.New("replica lag")
+	probeErr := errors.New("probe failed")
 	probeCalled := false
 
 	client, err := OpenWithDB(
@@ -147,7 +144,7 @@ func TestClientHealthCheckUsesCustomProbe(t *testing.T) {
 		sqlDB,
 		WithStartupPing(false),
 		WithSkipInitializeWithVersion(true),
-		WithHealthProbe(func(context.Context, *Client, NodeRole) error {
+		WithHealthProbe(func(context.Context, *Client) error {
 			probeCalled = true
 			return probeErr
 		}),
@@ -466,7 +463,7 @@ func TestDBStatsSnapshotUtilization(t *testing.T) {
 	}
 	snapshot.Utilization = float64(snapshot.InUse) / float64(snapshot.MaxOpenConnections)
 
-	metrics := snapshot.metrics(metricLabels("orders", RoleStandalone))
+	metrics := snapshot.metrics(metricLabels("orders"))
 	if metrics[9].Value != 0.4 {
 		t.Fatalf("expected utilization 0.4, got %v", metrics[9].Value)
 	}

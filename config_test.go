@@ -115,6 +115,26 @@ func TestOpenWithDBUsesExternalPool(t *testing.T) {
 	}
 }
 
+func TestPoolConfigDirectFieldAssignmentApplies(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+
+	// 直接对导出字段赋值（不经 Option）应生效；nil 字段表示不设置、保持默认。
+	cfg := NewConfig(WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	cfg.Pool.MaxOpenConns = new(7)
+	cfg.Pool.ConnMaxIdleTime = nil
+
+	client, err := cfg.OpenWithDB(context.Background(), sqlDB)
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	defer client.Close()
+
+	if got := client.Stats().MaxOpenConnections; got != 7 {
+		t.Fatalf("expected direct-assigned MaxOpenConns 7 to apply, got %d", got)
+	}
+}
+
 func TestOpenWithoutStartupPingDoesNotDialImmediately(t *testing.T) {
 	client, err := Open(
 		context.Background(),
