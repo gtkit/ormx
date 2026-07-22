@@ -14,7 +14,7 @@ import (
 )
 
 type paramsFilteringLogger interface {
-	ParamsFilter(ctx context.Context, sql string, params ...interface{}) (string, []interface{})
+	ParamsFilter(ctx context.Context, sql string, params ...any) (string, []any)
 }
 
 type testContextKey string

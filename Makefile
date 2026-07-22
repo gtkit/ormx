@@ -28,7 +28,7 @@ tag:
 	cov=$$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
 	rm -f coverage.out; \
 	awk -v c="$$cov" 'BEGIN { if (c+0 < 80) { printf "✗ 覆盖率 %.1f%% < 80%%\n", c+0; exit 1 } printf "✓ 覆盖率 %.1f%%\n", c+0 }'; \
-	echo "▶️ benchmark"; go test -bench=. -benchmem -run='^$$' ./... >/dev/null; \
+	echo "▶️ benchmark"; go test -bench=. -benchmem -count=3 -run='^$$' ./... >/dev/null; \
 	echo "▶️ govulncheck"; govulncheck ./...; \
 	current=$$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' version.go | head -n1 | tr -d 'v'); \
 	if [ -z "$$current" ]; then echo "version not found in version.go"; exit 1; fi; \
@@ -41,12 +41,16 @@ tag:
 	  major) echo "✗ 本项目只做 v1、不发 v2；且 MAJOR 还需 /v2 module path 重构（仅 bump tag 是错误发布），已拒绝"; exit 1 ;; \
 	  *) echo "✗ BUMP 必须为 patch 或 minor（当前: $(BUMP)）"; exit 1 ;; \
 	esac; \
+	if ! grep -qE "^## \[$$new\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md; then \
+		echo "✗ CHANGELOG.md 缺少版本条目：## [$$new] - YYYY-MM-DD，发版前请先补齐"; exit 1; \
+	fi; \
+	notes=$$(awk -v h="## [$$new] -" 'index($$0, h) == 1 { f = 1; print; next } f && /^## / { exit } f { print }' CHANGELOG.md); \
 	printf "Bump (%s): v%s -> %s\n" "$(BUMP)" "$$current" "$$new"; \
 	sed -E -i.bak 's/(const Version = ")([^"]+)(")/\1'"$$new"'\3/' version.go; \
 	rm -f version.go.bak; \
 	git add version.go; \
 	git commit -m "chore(release): $$new"; \
-	git tag -a "$$new" -m "release $$new"; \
+	git tag -a "$$new" -m "$$notes"; \
 	git push gtkit HEAD; \
 	git push gtkit "$$new"; \
 	printf "Done: %s\n" "$$new"

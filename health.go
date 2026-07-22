@@ -64,20 +64,6 @@ func (c *Client) Name() string {
 // HealthCheck 执行一次健康检查（Ping 加可选的 HealthProbe）并返回报告。
 // 当 ctx 未设置 deadline 时使用内置默认超时，避免无限阻塞。
 func (c *Client) HealthCheck(ctx context.Context) HealthReport {
-	return c.healthCheck(ctx, c.effectiveName())
-}
-
-// StatsSnapshot 返回当前连接池统计信息的快照。
-func (c *Client) StatsSnapshot() DBStatsSnapshot {
-	return newDBStatsSnapshot(c.sqlDB.Stats())
-}
-
-// Metrics 返回连接池的指标采样列表，标签含客户端名称。
-func (c *Client) Metrics() []MetricSample {
-	return c.metrics(c.effectiveName())
-}
-
-func (c *Client) healthCheck(ctx context.Context, name string) HealthReport {
 	ctx = normalizeContext(ctx)
 
 	// Apply a default timeout if the caller did not set a deadline,
@@ -90,7 +76,7 @@ func (c *Client) healthCheck(ctx context.Context, name string) HealthReport {
 
 	start := time.Now()
 	report := HealthReport{
-		Name:      name,
+		Name:      c.effectiveName(),
 		CheckedAt: start,
 		Status:    HealthStatusUp,
 	}
@@ -110,8 +96,14 @@ func (c *Client) healthCheck(ctx context.Context, name string) HealthReport {
 	return report
 }
 
-func (c *Client) metrics(name string) []MetricSample {
-	return c.StatsSnapshot().metrics(metricLabels(name))
+// StatsSnapshot 返回当前连接池统计信息的快照。
+func (c *Client) StatsSnapshot() DBStatsSnapshot {
+	return newDBStatsSnapshot(c.sqlDB.Stats())
+}
+
+// Metrics 返回连接池的指标采样列表，标签含客户端名称。
+func (c *Client) Metrics() []MetricSample {
+	return c.StatsSnapshot().metrics(metricLabels(c.effectiveName()))
 }
 
 func (c *Client) effectiveName() string {

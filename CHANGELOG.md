@@ -10,6 +10,11 @@
 
 - 导出哨兵错误 `ErrAddressRequired`（原未导出），调用方可用 `errors.Is` 判定 Open 因缺少连接地址而失败
 
+### Security
+
+- `RedactedDSN`（及依赖它的 `Config.String()` / `GoString()`）现在除密码外，还会脱敏连接参数（Params）值与连接属性（ConnectionAttributes），避免 `session_secret` 等敏感绑定值随日志泄露
+- `MySQLConfig` 新增脱敏的 `String()` / `GoString()`：直接以 `%v` / `%+v` / `%#v` 打印 `Config.MySQL` 子结构时，密码、参数值与连接属性同样被脱敏，不再泄露明文
+
 ### ⚠ 破坏性变更
 
 - 移除集群读写分离能力（`Cluster` 及其全部方法、`OpenCluster` / `NewCluster` / `NewClusterWithOptions`、`ClusterOption`、`Node`、`ClusterHealthReport`、`ErrNoReadableNode` / `ErrPrimaryUnavailable` / `ErrClusterClosed`），以及写后读一致性窗口（`ContextWithWriteFlag` / `ContextWithWriteWindow` / `ContextClearWriteFlag` / `HasWriteFlag`）。需要读写分离的下游请改用 `gorm.io/plugin/dbresolver`，并复用 `Client.HealthCheck` 做探活。

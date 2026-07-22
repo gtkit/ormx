@@ -29,6 +29,9 @@ const (
 	defaultStartupPingRetryMax = 5 * time.Second
 )
 
+// redactedMask 是日志脱敏时替换敏感值（密码、参数值、连接属性）的占位符。
+const redactedMask = "******"
+
 var errNilSQLDB = errors.New("ormx: nil *sql.DB")
 
 // Config 汇总建立 MySQL 连接所需的全部配置：驱动连接参数（MySQL）、
@@ -36,8 +39,8 @@ var errNilSQLDB = errors.New("ormx: nil *sql.DB")
 // Config 为值语义，可安全复制；通过 With 应用 Option 会返回新副本，不修改原值。
 // 字段全部导出以便从配置文件直接映射，但直接修改字段会绕过 Option 的防御逻辑，
 // 合法性由调用方自行保证；优先使用 Option 构建配置。
-// 注意：从配置文件映射时必须以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段；
-// 对零值 Config 直接反序列化会缺少 Pool 各字段的"已设置"标记，连接池配置将被静默忽略。
+// 注意：零值 Config 不携带任何默认值——建议以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段，
+// 以继承推荐的连接池大小、超时与启动 Ping 等默认。Pool 各字段为指针，nil 表示不设置、保持 database/sql 默认。
 type Config struct {
 	Name                     string
 	MySQL                    MySQLConfig
@@ -139,9 +142,38 @@ func (c Config) String() string {
 // GoString 实现 fmt.GoStringer，使 %#v 输出同样脱敏密码。
 func (c Config) GoString() string { return c.String() }
 
+// String 返回敏感值脱敏后的 MySQLConfig 表示，使 fmt 的 %v/%+v/%s 打印
+// 不泄露密码、连接参数值与连接属性；用于安全日志输出。
+func (c MySQLConfig) String() string { return c.redactedString(false) }
+
+// GoString 实现 fmt.GoStringer，使 %#v 输出同样脱敏。
+func (c MySQLConfig) GoString() string { return c.redactedString(true) }
+
+// redactedString 在值副本上脱敏密码、Params 值与 ConnectionAttributes 后格式化；
+// 通过 plain 别名（无 String/GoString 方法）避免格式化递归。
+func (c MySQLConfig) redactedString(goSyntax bool) string {
+	if c.Password != "" {
+		c.Password = redactedMask
+	}
+	if len(c.Params) > 0 {
+		c.Params = maps.Clone(c.Params)
+		for key := range c.Params {
+			c.Params[key] = redactedMask
+		}
+	}
+	if c.ConnectionAttributes != "" {
+		c.ConnectionAttributes = redactedMask
+	}
+	type plain MySQLConfig
+	if goSyntax {
+		return fmt.Sprintf("%#v", plain(c))
+	}
+	return fmt.Sprintf("%+v", plain(c))
+}
+
 // DefaultConfig 返回带合理默认值的 Config：
 // MySQL 默认通过 tcp 连接 127.0.0.1:3306，时区为 time.Local，启用 ParseTime，
-// 并设置拨号/读/写超时；连接池四项参数均使用包内默认值并标记为已设置；
+// 并设置拨号/读/写超时；连接池四项参数均设为包内默认值；
 // GORM 使用默认命名策略；StartupPing 默认开启，重试基础等待 1 秒、上限 5 秒、
 // 默认不重试（StartupPingMaxRetries 为 0）。
 func DefaultConfig() Config {
@@ -189,12 +221,26 @@ func (c Config) With(opts ...Option) Config {
 	return clone
 }
 
-// Clone 返回 Config 的深拷贝，其中 MySQL.Params 映射会被复制，
-// 避免副本与原值共享同一底层 map。
+// Clone 返回 Config 的深拷贝：复制 MySQL.Params 映射，以及连接池与方言中的可选指针字段，
+// 避免副本与原值共享同一底层 map 或指针。
 func (c Config) Clone() Config {
 	clone := c
 	clone.MySQL.Params = maps.Clone(c.MySQL.Params)
+	clone.Pool.MaxOpenConns = clonePtr(c.Pool.MaxOpenConns)
+	clone.Pool.MaxIdleConns = clonePtr(c.Pool.MaxIdleConns)
+	clone.Pool.ConnMaxLifetime = clonePtr(c.Pool.ConnMaxLifetime)
+	clone.Pool.ConnMaxIdleTime = clonePtr(c.Pool.ConnMaxIdleTime)
+	clone.Dialect.DefaultDatetimePrecision = clonePtr(c.Dialect.DefaultDatetimePrecision)
 	return clone
+}
+
+// clonePtr 返回 p 所指值的副本指针；p 为 nil 时返回 nil。
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // Open 按当前配置构建 MySQL 连接器并打开 *sql.DB，应用连接池配置后初始化 GORM，
@@ -261,15 +307,22 @@ func (c Config) DriverConfig() (*mysqldriver.Config, error) {
 	return c.MySQL.driverConfig()
 }
 
-// RedactedDSN 返回密码脱敏后的 DSN 字符串：密码非空时替换为 "******"，
-// 可安全用于日志输出；底层 DriverConfig 构建失败时返回错误。
+// RedactedDSN 返回敏感值脱敏后的 DSN 字符串，可安全用于日志输出；
+// 底层 DriverConfig 构建失败时返回错误。为避免泄露，密码、全部连接参数（Params）值
+// 与连接属性（ConnectionAttributes）在非空时统一替换为 "******"，仅保留参数名等结构信息。
 func (c Config) RedactedDSN() (string, error) {
 	driverCfg, err := c.DriverConfig()
 	if err != nil {
 		return "", err
 	}
 	if driverCfg.Passwd != "" {
-		driverCfg.Passwd = "******"
+		driverCfg.Passwd = redactedMask
+	}
+	for key := range driverCfg.Params {
+		driverCfg.Params[key] = redactedMask
+	}
+	if driverCfg.ConnectionAttributes != "" {
+		driverCfg.ConnectionAttributes = redactedMask
 	}
 	return driverCfg.FormatDSN(), nil
 }

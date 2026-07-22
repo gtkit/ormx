@@ -1,6 +1,7 @@
 package ormx
 
 import (
+	"maps"
 	"time"
 
 	gormlogger "gorm.io/gorm/logger"
@@ -148,9 +149,7 @@ func WithDSNParams(params map[string]string) Option {
 		if c.MySQL.Params == nil {
 			c.MySQL.Params = make(map[string]string, len(params))
 		}
-		for key, value := range params {
-			c.MySQL.Params[key] = value
-		}
+		maps.Copy(c.MySQL.Params, params)
 	}
 }
 

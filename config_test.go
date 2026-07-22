@@ -3,6 +3,7 @@ package ormx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,70 @@ func TestPoolConfigDirectFieldAssignmentApplies(t *testing.T) {
 
 	if got := client.Stats().MaxOpenConnections; got != 7 {
 		t.Fatalf("expected direct-assigned MaxOpenConns 7 to apply, got %d", got)
+	}
+}
+
+func TestConfigCloneDeepCopiesPointerFields(t *testing.T) {
+	base := NewConfig()
+	base.Dialect.DefaultDatetimePrecision = new(3)
+
+	clone := base.Clone()
+
+	// 改动副本指针所指的值，不得回写到原配置。
+	*clone.Pool.MaxOpenConns = 7
+	*clone.Dialect.DefaultDatetimePrecision = 6
+
+	if got := *base.Pool.MaxOpenConns; got != defaultMaxOpenConns {
+		t.Fatalf("expected original MaxOpenConns to stay %d, got %d", defaultMaxOpenConns, got)
+	}
+	if got := *base.Dialect.DefaultDatetimePrecision; got != 3 {
+		t.Fatalf("expected original DefaultDatetimePrecision to stay 3, got %d", got)
+	}
+}
+
+func TestRedactedDSNMasksParamsAndAttributes(t *testing.T) {
+	cfg := NewConfig(
+		WithUser("u"),
+		WithPassword("pw-secret"),
+		WithDSNParam("session_secret", "param-secret"),
+		WithConnectionAttributes("attribute-secret"),
+	)
+
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN() error = %v", err)
+	}
+	for _, secret := range []string{"pw-secret", "param-secret", "attribute-secret"} {
+		if strings.Contains(dsn, secret) {
+			t.Fatalf("redacted dsn leaked %q: %s", secret, dsn)
+		}
+	}
+	if !strings.Contains(dsn, "******") {
+		t.Fatalf("expected masked values in redacted dsn, got %s", dsn)
+	}
+}
+
+func TestMySQLConfigStringRedactsSecrets(t *testing.T) {
+	cfg := NewConfig(
+		WithUser("u"),
+		WithPassword("pw-secret"),
+		WithDSNParam("session_secret", "param-secret"),
+		WithConnectionAttributes("attribute-secret"),
+	)
+	for _, printed := range []string{
+		fmt.Sprintf("%v", cfg.MySQL),
+		fmt.Sprintf("%+v", cfg.MySQL),
+		fmt.Sprintf("%#v", cfg.MySQL),
+	} {
+		for _, secret := range []string{"pw-secret", "param-secret", "attribute-secret"} {
+			if strings.Contains(printed, secret) {
+				t.Fatalf("printing MySQLConfig leaked %q: %s", secret, printed)
+			}
+		}
+	}
+	// 脱敏在副本上进行，不得污染原始 Params。
+	if cfg.MySQL.Params["session_secret"] != "param-secret" {
+		t.Fatalf("printing mutated original Params: %v", cfg.MySQL.Params)
 	}
 }
 
