@@ -32,11 +32,13 @@ const (
 // redactedMask 是日志脱敏时替换敏感值（密码、参数值、连接属性）的占位符。
 const redactedMask = "******"
 
-var errNilSQLDB = errors.New("ormx: nil *sql.DB")
+// ErrNilSQLDB 表示向 OpenWithDB 传入了 nil *sql.DB；可用 errors.Is 判定。
+var ErrNilSQLDB = errors.New("ormx: nil *sql.DB")
 
 // Config 汇总建立 MySQL 连接所需的全部配置：驱动连接参数（MySQL）、
 // 连接池（Pool）、GORM 行为（GORM）、方言（Dialect）以及启动期 Ping 重试策略。
-// Config 为值语义，可安全复制；通过 With 应用 Option 会返回新副本，不修改原值。
+// Config 通过 With / Clone 返回隔离的深拷贝副本，不修改原值。注意普通赋值（cfg2 := cfg）
+// 只是浅拷贝，仍与原值共享 Params map 与连接池等指针字段；需要独立副本时用 Clone 或 With。
 // 字段全部导出以便从配置文件直接映射，但直接修改字段会绕过 Option 的防御逻辑，
 // 合法性由调用方自行保证；优先使用 Option 构建配置。
 // 注意：零值 Config 不携带任何默认值——建议以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段，
@@ -144,6 +146,8 @@ func (c Config) GoString() string { return c.String() }
 
 // String 返回敏感值脱敏后的 MySQLConfig 表示，使 fmt 的 %v/%+v/%s 打印
 // 不泄露密码、连接参数值与连接属性；用于安全日志输出。
+// 注意：脱敏仅覆盖 fmt/Stringer 路径，结构化日志器（如 slog.Any）会反射字段、绕过本方法，
+// 因此请勿将原始 Config/MySQLConfig 直接传给结构化日志，改用 String() 或 RedactedDSN()。
 func (c MySQLConfig) String() string { return c.redactedString(false) }
 
 // GoString 实现 fmt.GoStringer，使 %#v 输出同样脱敏。
@@ -280,7 +284,7 @@ func (c Config) MustOpen(ctx context.Context) *Client {
 // 无论成败，sqlDB 的所有权始终归调用方（Client.Close 不会关闭它）。
 func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) {
 	if sqlDB == nil {
-		return nil, errNilSQLDB
+		return nil, ErrNilSQLDB
 	}
 	return c.openWithSQLDB(ctx, sqlDB, false, nil)
 }

@@ -463,8 +463,83 @@ func TestDBStatsSnapshotUtilization(t *testing.T) {
 	}
 	snapshot.Utilization = float64(snapshot.InUse) / float64(snapshot.MaxOpenConnections)
 
-	metrics := snapshot.metrics(metricLabels("orders"))
+	metrics := snapshot.metrics(map[string]string{"name": "orders"})
 	if metrics[9].Value != 0.4 {
 		t.Fatalf("expected utilization 0.4, got %v", metrics[9].Value)
+	}
+}
+
+func TestClientConfigRedactsPasswordAndReturnsCopy(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithName("orders"), WithPassword("pw-secret"),
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+
+	got := client.Config()
+	if got.MySQL.Password == "pw-secret" {
+		t.Fatal("Config() leaked plaintext password")
+	}
+	if got.Name != "orders" {
+		t.Fatalf("expected name orders, got %q", got.Name)
+	}
+	got.MySQL.Host = "mutated"
+	if client.Config().MySQL.Host == "mutated" {
+		t.Fatal("Config() returned a shared reference, expected independent copy")
+	}
+}
+
+func TestHealthReportHealthy(t *testing.T) {
+	if !(HealthReport{Status: HealthStatusUp}).Healthy() {
+		t.Fatal("expected up report to be healthy")
+	}
+	if (HealthReport{Status: HealthStatusDown}).Healthy() {
+		t.Fatal("expected down report to be unhealthy")
+	}
+}
+
+func TestClientName(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+	named, err := OpenWithDB(context.Background(), sqlDB,
+		WithName("orders"), WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	if named.Name() != "orders" {
+		t.Fatalf("expected orders, got %q", named.Name())
+	}
+
+	sqlDB2, _ := newStubDB()
+	defer sqlDB2.Close()
+	unnamed, err := OpenWithDB(context.Background(), sqlDB2,
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	if unnamed.Name() != "default" {
+		t.Fatalf("expected default, got %q", unnamed.Name())
+	}
+}
+
+func TestOpenWithDBNilReturnsErrNilSQLDB(t *testing.T) {
+	if _, err := OpenWithDB(context.Background(), nil); !errors.Is(err, ErrNilSQLDB) {
+		t.Fatalf("expected ErrNilSQLDB, got %v", err)
+	}
+}
+
+func TestWithTxNilFuncReturnsErrNilTxFunc(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	if txErr := client.WithTx(context.Background(), nil, nil); !errors.Is(txErr, ErrNilTxFunc) {
+		t.Fatalf("expected ErrNilTxFunc, got %v", txErr)
 	}
 }

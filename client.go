@@ -26,9 +26,14 @@ func (c *Client) SQLDB() *sql.DB {
 	return c.sqlDB
 }
 
-// Config 返回客户端配置的副本。
+// Config 返回客户端配置的脱敏快照：深拷贝并把密码替换为占位符，
+// 不含明文凭据，仅供检视。需要真实密码请由调用方保留原始配置。
 func (c *Client) Config() Config {
-	return c.config.Clone()
+	cfg := c.config.Clone()
+	if cfg.MySQL.Password != "" {
+		cfg.MySQL.Password = redactedMask
+	}
+	return cfg
 }
 
 // PingContext 检测数据库连接是否可用。

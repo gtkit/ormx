@@ -103,7 +103,7 @@ func (c *Client) StatsSnapshot() DBStatsSnapshot {
 
 // Metrics 返回连接池的指标采样列表，标签含客户端名称。
 func (c *Client) Metrics() []MetricSample {
-	return c.StatsSnapshot().metrics(metricLabels(c.effectiveName()))
+	return c.StatsSnapshot().metrics(map[string]string{"name": c.effectiveName()})
 }
 
 func (c *Client) effectiveName() string {
@@ -146,12 +146,4 @@ func (s DBStatsSnapshot) metrics(labels map[string]string) []MetricSample {
 		{Name: "orm_db_max_lifetime_closed_total", Value: float64(s.MaxLifetimeClosed), Labels: maps.Clone(labels)},
 		{Name: "orm_db_connection_utilization", Value: s.Utilization, Labels: maps.Clone(labels)},
 	}
-}
-
-func metricLabels(name string) map[string]string {
-	labels := map[string]string{}
-	if name != "" {
-		labels["name"] = name
-	}
-	return labels
 }

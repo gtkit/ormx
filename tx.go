@@ -15,7 +15,8 @@ const (
 	defaultRetryMaxWait  = 50 * time.Millisecond
 )
 
-var errNilTxFunc = errors.New("ormx: nil transaction function")
+// ErrNilTxFunc 表示向 WithTx 传入了 nil 事务函数；可用 errors.Is 判定。
+var ErrNilTxFunc = errors.New("ormx: nil transaction function")
 
 // TxRetryEvent 描述一次事务死锁重试事件。
 type TxRetryEvent struct {
@@ -83,7 +84,7 @@ func (c *Client) WithTx(
 	ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error, txOpts ...TxOption,
 ) error {
 	if fn == nil {
-		return errNilTxFunc
+		return ErrNilTxFunc
 	}
 
 	// 入口统一标准化，保证重试等待、observer 回调等全部下游路径拿到非 nil ctx。

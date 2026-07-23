@@ -9,11 +9,13 @@
 ### Added
 
 - 导出哨兵错误 `ErrAddressRequired`（原未导出），调用方可用 `errors.Is` 判定 Open 因缺少连接地址而失败
+- 导出哨兵错误 `ErrNilSQLDB`、`ErrNilTxFunc`（原未导出），调用方可用 `errors.Is` 判定向 `OpenWithDB` 传入 nil `*sql.DB`、或向 `WithTx` 传入 nil 事务函数
 
 ### Security
 
 - `RedactedDSN`（及依赖它的 `Config.String()` / `GoString()`）现在除密码外，还会脱敏连接参数（Params）值与连接属性（ConnectionAttributes），避免 `session_secret` 等敏感绑定值随日志泄露
 - `MySQLConfig` 新增脱敏的 `String()` / `GoString()`：直接以 `%v` / `%+v` / `%#v` 打印 `Config.MySQL` 子结构时，密码、参数值与连接属性同样被脱敏，不再泄露明文
+- `Client.Config()` 返回的配置快照会把密码脱敏为占位符，不再返回明文凭据；打印路径之外的脱敏保证仅覆盖 `fmt`/`Stringer`，请勿将原始 `Config`/`MySQLConfig` 直接用于结构化日志（如 `slog.Any`）
 
 ### ⚠ 破坏性变更
 
@@ -23,7 +25,7 @@
 
 ### Removed
 
-- 删除集群相关源码与测试，主包回归单机连接、事务与健康/可观测能力；单机 `Client.HealthCheck` / `StatsSnapshot` / `Metrics` 及 `WithHealthProbe` 保持不变
+- 删除集群相关源码与测试，主包回归单机连接、事务与健康/可观测能力；`Client.HealthCheck` / `StatsSnapshot` / `Metrics` / `Name` 与 `WithHealthProbe` 仍提供，但相关类型、字段与签名有调整（见上文「破坏性变更」）
 
 ### Changed
 

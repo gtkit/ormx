@@ -48,7 +48,7 @@ db := client.DB() // *gorm.DB，直接走 GORM API
 | `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（连接池设置仍会应用）；`sqlDB` 所有权归调用方，`Close()` 不会关闭它 |
 | `ormx.NewConfig(opts...)` / `cfg.With(opts...)` / `cfg.Open(ctx)` | 先构建 `Config` 值再打开，适合从配置文件映射、多实例复用基础配置 |
 
-`Config` 是纯值类型：`With` 返回深拷贝后的新配置，不修改原值；`Config.String()` / `%#v` 输出自动把密码脱敏为 `******`，可放心打日志。`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。
+`Config` 通过 `With` / `Clone` 返回隔离的深拷贝，不修改原值；普通赋值（`cfg2 := cfg`）为浅拷贝，仍共享 `Params` map 与连接池等指针字段，需独立副本时用 `Clone`/`With`。`Config.String()`（及 `MySQLConfig.String()`）与 `%v` / `%+v` / `%#v` 输出会把密码、参数值与连接属性脱敏为 `******`，可放心打日志；`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。注意：脱敏仅覆盖 `fmt`/`Stringer` 路径，**不要把原始 `Config`/`MySQLConfig` 直接传给结构化日志器（如 `slog.Any`）或用于序列化日志**——请改用 `String()` 或 `RedactedDSN()`。
 
 ```go
 base := ormx.NewConfig(
@@ -309,6 +309,3 @@ make tag BUMP=minor  # minor 发版（新增向后兼容功能，或按本项目
 发版前提：工作区干净，且 `CHANGELOG.md` 已有目标版本条目（格式 `## [vX.Y.Z] - YYYY-MM-DD`）。
 门禁包含 vet、lint、race 测试、benchmark、覆盖率 ≥ 80% 与 govulncheck，任一失败即中止；
 tag message 自动携带该版本的 CHANGELOG 内容。
-
-> 注意：升 major 到 v2 及以上时，必须先把 `go.mod` 的 module path 改为 `github.com/gtkit/ormx/v2`
-> 并同步包内 import（Go Module 硬要求），`make tag BUMP=major` 不会自动处理这一步。
