@@ -17,8 +17,8 @@
 //
 //	db := client.DB() // *gorm.DB，直接走 GORM API
 //
-// 事务通过 [Client.WithTx] 执行，遇 MySQL 死锁（1213）或锁等待超时（1205）
-// 自动按带抖动的指数退避重试。
+// 事务通过 [Client.Transaction]（或需要 *sql.TxOptions 时的 [Client.WithTx]）执行，
+// 遇 MySQL 死锁（1213）或锁等待超时（1205）自动按带抖动的指数退避重试。
 //
 // 连接健康检查与连接池统计见 [Client.HealthCheck] 与 [Client.StatsSnapshot]。
 //

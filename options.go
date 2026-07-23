@@ -4,6 +4,7 @@ import (
 	"maps"
 	"time"
 
+	"go.uber.org/zap"
 	gormlogger "gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 
@@ -13,7 +14,7 @@ import (
 // Option 是修改 Config 的函数式配置项，配合 NewConfig、Open 等入口使用。
 type Option func(*Config)
 
-// WithName 设置数据库实例名称，用于健康检查报告与日志等可观测标识。
+// WithName 设置数据库实例名称，用于 Client.Name、健康报告与事务重试事件。
 func WithName(name string) Option {
 	return func(c *Config) {
 		c.Name = name
@@ -73,6 +74,31 @@ func WithPassword(password string) Option {
 	}
 }
 
+// WithDSN 以完整 MySQL DSN（如 "user:pass@tcp(host:3306)/db?parseTime=true"）初始化
+// 连接配置，适合配置里已有现成 DSN 的场景。本库未单独建模的驱动参数（multiStatements、
+// maxAllowedPacket、charset 回退列表等）会原样保留并透传给驱动，连接行为与直接使用该
+// DSN 一致。注意语义：
+//
+//   - 整体替换：MySQL 连接子配置以该 DSN 为准，DSN 未写的参数按驱动默认生效
+//     （如 parseTime=false、时区 UTC、无超时），本包 DefaultConfig 的 MySQL 默认不再叠加；
+//     连接池、GORM 行为等非 DSN 配置不受影响。
+//   - 可继续覆盖：建议把 WithDSN 放在其它连接 Option 之前——之后的 Option 仍可按序
+//     覆盖单个字段（TCP 地址已同步拆出 Host/Port，WithHost/WithPort 覆盖可用）。
+//   - 失败不 panic：DSN 解析失败（含驱动已移除的 strict 等参数，此类可用
+//     errors.Is(err, ErrDSNUnsupported) 判定）会保留到 Open/RedactedDSN 时报错，
+//     即便后续 Option 覆盖了字段。
+func WithDSN(dsn string) Option {
+	return func(c *Config) {
+		m, state, err := parseDSNConfig(dsn)
+		if err != nil {
+			c.dsn = &dsnState{err: err}
+			return
+		}
+		c.MySQL = m
+		c.dsn = state
+	}
+}
+
 // WithParseTime 设置是否将 DATE/DATETIME 列解析为 time.Time。默认开启。
 func WithParseTime(enabled bool) Option {
 	return func(c *Config) {
@@ -126,6 +152,22 @@ func WithCollation(collation string) Option {
 	}
 }
 
+// WithCharset 设置连接字符集（如 "utf8mb4"）：连接建立后驱动执行 `SET NAMES <charset>`，
+// 与 WithCollation 同时设置时执行 `SET NAMES <charset> COLLATE <collation>`。
+// 驱动默认连接字符集已是 utf8mb4（默认 collation utf8mb4_general_ci），并非必须设置，
+// 仅在需要显式指定 charset 或与 WithCollation 联用时使用；显式设置会让每条新连接
+// 多执行一次 SET NAMES。
+//
+// 仅支持单一字符集，且标识符只允许字母、数字与下划线（charset 拼入原始 SQL，库层校验
+// 以降低误配置与注入风险）。逗号分隔的回退列表（如 "utf8mb4,utf8"）无法经本 Option
+// 设置（需要时用 WithDSN 的 charset 参数），传入会在 Open 时返回包装 ErrDSNUnsupported
+// 的错误；同理，来自 WithDSN 的 charset 无法用 WithCharset("") 清除。
+func WithCharset(charset string) Option {
+	return func(c *Config) {
+		c.MySQL.Charset = charset
+	}
+}
+
 // WithConnectionAttributes 设置 MySQL 连接属性（connection attributes）字符串。
 func WithConnectionAttributes(attrs string) Option {
 	return func(c *Config) {
@@ -135,8 +177,8 @@ func WithConnectionAttributes(attrs string) Option {
 
 // WithSystemVariable 追加一个连接系统变量：连接建立后驱动会执行 `SET key = value`，
 // 因此 value 必须是合法的 SQL 表达式（如字符串需自带引号）。它不是 DSN 内置参数——
-// loc、parseTime、timeout 等 DSN 内置参数由专用 Option（WithLocation/WithParseTime/WithTimeout）处理，请勿经此设置；
-// charset 目前无专用 Option；如需设置，自行用 mysql.Charset(...) 构建 *sql.DB（或 DSN 带 charset=），再经 OpenWithDB 接入。
+// loc、parseTime、timeout、charset 等 DSN 内置参数由专用 Option
+// （WithLocation/WithParseTime/WithTimeout/WithCharset）处理，请勿经此设置。
 // SystemVariables 为 nil 时自动初始化，同名 key 会被覆盖；空 key 会在 Open 时返回错误。
 //
 // 安全边界：key/value 作为原始 SQL 直接拼接为 `SET` 语句执行，仅接受可信的静态配置；
@@ -233,6 +275,18 @@ func WithGormLogger(log gormlogger.Interface) Option {
 func WithZlogger(opts ...zlogger.Option) Option {
 	return func(c *Config) {
 		c.GORM.Logger = zlogger.New(opts...)
+	}
+}
+
+// WithZapLogger 用给定的 *zap.Logger 构造 GORM 日志器并注入，是接入 zap 的最短路径，
+// 等价于 WithZlogger(zlogger.WithLogger(zlog), opts...)。zlog 为 nil 时回退为 no-op（静默丢弃）。
+// opts 在 logger 注入之后按序应用；默认级别 Warn、慢查询 200ms、参数化查询开启（不记录绑定参数值）。
+func WithZapLogger(zlog *zap.Logger, opts ...zlogger.Option) Option {
+	return func(c *Config) {
+		zopts := make([]zlogger.Option, 0, len(opts)+1)
+		zopts = append(zopts, zlogger.WithLogger(zlog))
+		zopts = append(zopts, opts...)
+		c.GORM.Logger = zlogger.New(zopts...)
 	}
 }
 

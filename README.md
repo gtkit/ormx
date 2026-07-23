@@ -1,6 +1,6 @@
 # ormx
 
-企业级 MySQL 数据访问封装（内部使用），单一活跃模块，包含两个包：
+基于 GORM 的 MySQL 数据访问封装，包含两个包：
 
 | 包 | 用途 |
 |----|------|
@@ -38,6 +38,8 @@ defer client.Close()
 db := client.DB() // *gorm.DB，直接走 GORM API
 ```
 
+配置里已有现成 DSN 时，可用 `ormx.WithDSN("user:pass@tcp(host:3306)/db?parseTime=true")` 一行替代上面的连接 Option（语义与限制见下文选项表）。
+
 ### 打开方式
 
 | 入口 | 说明 |
@@ -65,7 +67,8 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithName(name)` | `"default"` | 实例名，体现在健康报告、指标 label、事务重试事件中；多实例时建议显式设置 |
+| `WithName(name)` | `"default"` | 实例名，用于 `Client.Name`、健康报告与事务重试事件；多实例时建议显式设置 |
+| `WithDSN(dsn)` | — | 以完整 DSN（如 `user:pass@tcp(host:3306)/db?parseTime=true`）**整体替换** MySQL 连接子配置：DSN 未写的参数按驱动默认（parseTime=false、时区 UTC、无超时），不叠加本包默认；本库未单独建模的驱动参数（`multiStatements`、`maxAllowedPacket`、charset 回退列表等）原样透传给驱动，不丢失。建议放在其它连接 Option 之前，之后的 Option 仍可覆盖单个字段（含 `WithHost`/`WithPort`） |
 | `WithHost(host)` | `127.0.0.1` | 主机；设置后清空 Addr |
 | `WithPort(port)` | `3306` | 端口；设置后清空 Addr |
 | `WithAddress(addr)` | 空 | 完整地址（`host:port`），优先级高于 Host/Port |
@@ -79,19 +82,35 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithReadTimeout(d)` | `30s` | I/O 读超时 |
 | `WithWriteTimeout(d)` | `30s` | I/O 写超时 |
 | `WithTLSConfig(name)` | 空 | TLS 配置名（需先用 `mysql.RegisterTLSConfig` 注册） |
+| `WithCharset(charset)` | 驱动默认（utf8mb4） | 显式指定连接字符集，连接后执行 `SET NAMES <charset>`；配 `WithCollation` 时执行 `SET NAMES <charset> COLLATE <collation>`。驱动默认已是 utf8mb4，非必选项；标识符仅允许字母/数字/下划线，仅支持单一字符集（回退列表返回 `ErrDSNUnsupported`，需要时经 `WithDSN` 的 `charset=` 参数设置） |
 | `WithCollation(collation)` | 驱动默认 | 连接 collation |
 | `WithConnectionAttributes(attrs)` | 空 | 连接属性（`performance_schema.session_connect_attrs`） |
-| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式、且仅接受可信静态配置。**非** DSN 内置参数（`loc`→`WithLocation`、`parseTime`→`WithParseTime` 等；`charset` 目前无专用 Option，如需请自行用 `mysql.Charset(...)` 构建 `*sql.DB` 再经 `OpenWithDB` 接入） |
+| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式、且仅接受可信静态配置。**非** DSN 内置参数（`loc`→`WithLocation`、`parseTime`→`WithParseTime`、`charset`→`WithCharset` 等） |
 | `WithSystemVariables(params)` | — | 批量追加连接系统变量，语义同上 |
 
 #### 连接池
 
-| Option | 默认值 | 说明 |
-|--------|--------|------|
-| `WithMaxOpenConns(n)` | `50` | 最大打开连接数 |
-| `WithMaxIdleConns(n)` | `10` | 最大空闲连接数 |
-| `WithConnMaxLifetime(d)` | `30m` | 连接最大存活时间 |
-| `WithConnMaxIdleTime(d)` | `10m` | 连接最大空闲时间 |
+这四个选项透传到标准库 `sql.DB` 的对应方法（`Open` 用下列默认值初始化；`OpenWithDB` 只应用显式传入的项，其余保持外部 `*sql.DB` 原样）：
+
+| Option | 默认值 | 透传到 | 取值语义 |
+|--------|--------|--------|---------|
+| `WithMaxOpenConns(n)` | `50` | `sql.DB.SetMaxOpenConns` | `n ≤ 0` 表示不限制打开连接数 |
+| `WithMaxIdleConns(n)` | `10` | `sql.DB.SetMaxIdleConns` | `n ≤ 0` 表示不保留空闲连接 |
+| `WithConnMaxLifetime(d)` | `30m` | `sql.DB.SetConnMaxLifetime` | `d ≤ 0` 表示连接不过期 |
+| `WithConnMaxIdleTime(d)` | `10m` | `sql.DB.SetConnMaxIdleTime` | `d ≤ 0` 表示空闲连接不因闲置被关闭 |
+
+```go
+client, err := ormx.Open(ctx,
+    ormx.WithHost("127.0.0.1"), ormx.WithDatabase("app"),
+    ormx.WithUser("app"), ormx.WithPassword(os.Getenv("DB_PASSWORD")),
+    ormx.WithMaxOpenConns(100),
+    ormx.WithMaxIdleConns(20),
+    ormx.WithConnMaxLifetime(time.Hour),
+    ormx.WithConnMaxIdleTime(10*time.Minute),
+)
+```
+
+> 注意：`database/sql` 会把 `MaxIdleConns` 自动限制到不超过 `MaxOpenConns`——调小 `MaxOpenConns` 时记得同步下调 `MaxIdleConns`，否则多出的空闲上限会被静默截断。
 
 #### GORM 行为
 
@@ -99,6 +118,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 |--------|--------|------|
 | `WithGormLogger(log)` | `Discard`（静默） | 设置任意 `gormlogger.Interface` 实现；默认静默，不输出任何 SQL 日志 |
 | `WithZlogger(opts...)` | 无参为 no-op（静默） | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`；不传 Option 时用 zlogger 默认（no-op logger，静默丢弃），须至少 `zlogger.WithLogger(...)` 注入 zap。详见下文 zlogger 章节 |
+| `WithZapLogger(zlog, opts...)` | — | 直传 `*zap.Logger` 一步接入，等价 `WithZlogger(zlogger.WithLogger(zlog), opts...)`（接 zap 的最短路径）；`nil` 回退 no-op，附加 `zlogger.Option` 在其后按序生效 |
 | `WithPrepareStmt(enabled)` | `false` | 开启预编译语句缓存。默认关闭；适合长生命周期单例 Client，**不要频繁 Open/Close**（GORM 的 TTL 缓存清理 goroutine 不随 `Close` 退出，`Close` 仅释放已缓存语句） |
 | `WithPrepareStmtCache(maxSize, ttl)` | GORM 默认 | 预编译语句缓存容量与 TTL，**仅在 `WithPrepareStmt(true)` 时生效**；不设置时沿用 GORM 的缓存默认 |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
@@ -121,10 +141,11 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 // 默认即静默；如需显式关闭也可
 ormx.WithGormLogger(gormlogger.Discard)
 
-// 记录错误 SQL 与超过 200ms 的慢 SQL
+// 记录错误 SQL 与超过 200ms 的慢 SQL；
+// 注意 gormlogger.Default 会把真实绑定参数插值进日志，仅用于受控开发环境
 ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Warn))
 
-// 记录全部 SQL，仅建议开发环境使用
+// 记录全部 SQL；同样会输出真实绑定参数，仅用于受控开发环境
 ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 ```
 
@@ -165,13 +186,13 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 | `PingContext(ctx) error` | 连通性检查 |
 | `StatsSnapshot() DBStatsSnapshot` | 连接池统计快照（额外含 `Utilization`），业务层据此自行对接监控；需原始 `sql.DBStats` 用 `SQLDB().Stats()` |
 | `HealthCheck(ctx) HealthReport` | 健康检查（Ping + 自定义探针，默认 5s 超时） |
-| `WithTx` / `WithReadTx` | 事务，见下节 |
+| `Transaction` / `WithTx` / `WithReadTx` | 事务，见下节 |
 | `Close() error` | 关闭连接池（`OpenWithDB` 包装的实例不关闭外部 `*sql.DB`） |
 
 ### 事务（死锁自动重试）
 
 ```go
-err := client.WithTx(ctx, nil, func(tx *gorm.DB) error {
+err := client.Transaction(ctx, func(tx *gorm.DB) error {
     if err := tx.Create(&order).Error; err != nil {
         return err
     }
@@ -181,7 +202,7 @@ err := client.WithTx(ctx, nil, func(tx *gorm.DB) error {
 
 - `fn` 返回 nil 则提交，返回 error 则回滚；panic 时回滚后继续抛出。
 - 遇到 MySQL 死锁（1213）或锁等待超时（1205）时自动按带抖动的指数退避重试，**默认最多 3 次**。重试意味着 `fn` 可能执行多次，事务内逻辑须幂等。
-- 第二个参数可传 `*sql.TxOptions` 指定隔离级别/只读；`WithReadTx(ctx, fn)` 是 `ReadOnly: true` 的便捷形式。
+- 需要指定隔离级别/只读时用 `WithTx(ctx, &sql.TxOptions{...}, fn)`（`Transaction` 等价于 `WithTx(ctx, nil, fn)`）；`WithReadTx(ctx, fn)` 是 `ReadOnly: true` 的便捷形式。
 
 每次调用可用 `TxOption` 覆盖重试行为：
 
@@ -192,7 +213,7 @@ err := client.WithTx(ctx, nil, func(tx *gorm.DB) error {
 | `WithRetryMaxWait(d)` | `50ms` | 单次退避上限 |
 
 ```go
-err := client.WithTx(ctx, nil, fn, ormx.WithMaxRetries(5), ormx.WithRetryMaxWait(200*time.Millisecond))
+err := client.Transaction(ctx, fn, ormx.WithMaxRetries(5), ormx.WithRetryMaxWait(200*time.Millisecond))
 ```
 
 ### 多库多实例
@@ -241,8 +262,9 @@ ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client) error {
 |------|---------|
 | `ormx.ErrAddressRequired` | 既未提供 `Addr`、又缺 `Host`/`Port`，或 `unix` 网络未用 `WithAddress` 指定 socket 路径 |
 | `ormx.ErrNilSQLDB` | 向 `OpenWithDB` 传入 nil `*sql.DB` |
-| `ormx.ErrNilTxFunc` | 向 `WithTx` 传入 nil 事务函数 |
+| `ormx.ErrNilTxFunc` | 向 `Transaction`/`WithTx` 传入 nil 事务函数 |
 | `ormx.ErrSystemVariableNameRequired` | 系统变量名为空或纯空白 |
+| `ormx.ErrDSNUnsupported` | DSN 级设置无法经当前 API 表达：`WithCharset` 传回退列表（`utf8mb4,utf8`）、用 `WithCharset("")` 清除来自 `WithDSN` 的 charset，或 DSN 使用驱动已移除的参数（如 `strict`） |
 
 ```go
 if _, err := ormx.Open(ctx, /* ...缺少地址... */); errors.Is(err, ormx.ErrAddressRequired) {
@@ -254,7 +276,7 @@ if _, err := ormx.Open(ctx, /* ...缺少地址... */); errors.Is(err, ormx.ErrAd
 
 ## zlogger（GORM 的 zap 日志适配）
 
-`zlogger` 是实现 `gormlogger.Interface` 的 zap 日志器。用 `ormx.WithZlogger` 一步接入，无需显式调用 `zlogger.New`：
+`zlogger` 是实现 `gormlogger.Interface` 的 zap 日志器。用 `ormx.WithZapLogger` 直传 `*zap.Logger` 一步接入：
 
 ```go
 import (
@@ -268,8 +290,7 @@ zlog, _ := zap.NewProduction()
 
 client, err := ormx.Open(ctx,
     // ...连接选项...
-    ormx.WithZlogger(
-        zlogger.WithLogger(zlog),
+    ormx.WithZapLogger(zlog,
         zlogger.WithLogLevel(gormlogger.Warn),
         zlogger.WithSlowThreshold(300*time.Millisecond),
         zlogger.WithIgnoreRecordNotFoundError(true),
@@ -284,7 +305,14 @@ client, err := ormx.Open(ctx,
 )
 ```
 
-`WithZlogger(opts...)` 等价于 `WithGormLogger(zlogger.New(opts...))`。需要注入自定义 `gormlogger.Interface` 实现（或已构造好的日志器）时，仍用 `WithGormLogger`。
+`WithZapLogger(zlog, opts...)` 等价于 `WithZlogger(zlogger.WithLogger(zlog), opts...)`，后者（`WithZlogger(opts...)` ≙ `WithGormLogger(zlogger.New(opts...))`）适合 Option 完全由外部组装的场景。需要注入自定义 `gormlogger.Interface` 实现（或已构造好的日志器）时，仍用 `WithGormLogger`。
+
+多个数据库共享同一日志器时，建议给各实例的 zap logger 显式附加区分字段：
+
+```go
+ormx.WithName("orders"),
+ormx.WithZapLogger(zlog.With(zap.String("database", "orders"))),
+```
 
 ### 选项函数
 
@@ -308,18 +336,3 @@ client, err := ormx.Open(ctx,
 `LogMode` 遵循 GORM 约定返回调级别后的副本，可配合 `db.Session(&gorm.Session{Logger: ...})` 做局部调级。
 
 > 安全提示：参数化查询默认开启（隐藏绑定参数）。仅在受控排障环境显式传 `WithParameterizedQueries(false)` 打开真实参数——它会把密码、Token 等敏感值写入日志。
-
----
-
-## 发版
-
-```bash
-make tag             # patch 发版：自动 bump patch、跑门禁、打 tag 并推送
-make tag BUMP=minor  # minor 发版（新增向后兼容功能，或按本项目策略承载破坏性变更）
-```
-
-本项目只维护 `v1`，不发 `major`/`v2`（`make tag BUMP=major` 会被拒绝）；破坏性变更按 MINOR 发布并在 `CHANGELOG.md` 以 **⚠ 破坏性变更** 标注。
-
-发版前提：工作区干净，且 `CHANGELOG.md` 已有目标版本条目（格式 `## [vX.Y.Z] - YYYY-MM-DD`）。
-门禁包含 vet、lint、race 测试、benchmark、覆盖率 ≥ 80% 与 govulncheck，任一失败即中止；
-tag message 自动携带该版本的 CHANGELOG 内容。

@@ -152,6 +152,14 @@ func (c *Client) WithReadTx(ctx context.Context, fn func(tx *gorm.DB) error) err
 	return c.WithTx(ctx, &sql.TxOptions{ReadOnly: true}, fn)
 }
 
+// Transaction 在事务中执行 fn，等价于 WithTx(ctx, nil, fn, txOpts...)，
+// 是最常见调用（默认事务选项）的便捷入口：提交/回滚、死锁自动重试与
+// panic 回滚后原样上抛的语义均见 WithTx。需要指定 *sql.TxOptions
+// （隔离级别、只读）时用 WithTx；只读事务另有便捷入口 WithReadTx。
+func (c *Client) Transaction(ctx context.Context, fn func(tx *gorm.DB) error, txOpts ...TxOption) error {
+	return c.WithTx(ctx, nil, fn, txOpts...)
+}
+
 // execTx 执行单次事务尝试。ctx 已在 WithTx 入口标准化，必定非 nil。
 func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error) (err error) {
 	txDB := c.db.WithContext(ctx)

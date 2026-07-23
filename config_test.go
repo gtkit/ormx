@@ -25,7 +25,7 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 		WithSystemVariable("time_zone", "'+00:00'"),
 	)
 
-	driverCfg, err := cfg.MySQL.driverConfig()
+	driverCfg, err := cfg.MySQL.driverConfig(nil)
 	if err != nil {
 		t.Fatalf("DriverConfig() error = %v", err)
 	}
@@ -291,7 +291,7 @@ func TestDialectorConfigMapping(t *testing.T) {
 
 func TestEmptySystemVariableNameRejected(t *testing.T) {
 	for _, key := range []string{"", "  ", "\t"} {
-		if _, err := NewConfig(WithSystemVariable(key, "x")).MySQL.driverConfig(); !errors.Is(err, ErrSystemVariableNameRequired) {
+		if _, err := NewConfig(WithSystemVariable(key, "x")).MySQL.driverConfig(nil); !errors.Is(err, ErrSystemVariableNameRequired) {
 			t.Fatalf("key=%q: expected ErrSystemVariableNameRequired, got %v", key, err)
 		}
 	}

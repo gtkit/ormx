@@ -2,6 +2,8 @@ package ormx
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,7 +55,7 @@ func TestMySQLConfigDriverConfig(t *testing.T) {
 		ParseTime:            true,
 	}
 
-	cfg, err := c.driverConfig()
+	cfg, err := c.driverConfig(nil)
 	if err != nil {
 		t.Fatalf("driverConfig: %v", err)
 	}
@@ -94,7 +96,7 @@ func TestMySQLConfigDriverConfig(t *testing.T) {
 
 func TestMySQLConfigDriverConfigClonesParams(t *testing.T) {
 	src := map[string]string{"time_zone": "'+00:00'"}
-	cfg, err := MySQLConfig{Addr: "db:3306", SystemVariables: src}.driverConfig()
+	cfg, err := MySQLConfig{Addr: "db:3306", SystemVariables: src}.driverConfig(nil)
 	if err != nil {
 		t.Fatalf("driverConfig: %v", err)
 	}
@@ -107,11 +109,11 @@ func TestMySQLConfigDriverConfigClonesParams(t *testing.T) {
 
 func TestMySQLConfigUnixRequiresAddr(t *testing.T) {
 	// unix 网络未设 Addr 应报错，而不是把默认 Host/Port 拼成 unix(127.0.0.1:3306)。
-	if _, err := (MySQLConfig{Net: "unix", Host: "127.0.0.1", Port: "3306"}).driverConfig(); !errors.Is(err, ErrAddressRequired) {
+	if _, err := (MySQLConfig{Net: "unix", Host: "127.0.0.1", Port: "3306"}).driverConfig(nil); !errors.Is(err, ErrAddressRequired) {
 		t.Fatalf("expected ErrAddressRequired for unix without Addr, got %v", err)
 	}
 	// unix + socket 路径应正常。
-	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig()
+	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig(nil)
 	if err != nil {
 		t.Fatalf("driverConfig: %v", err)
 	}
@@ -122,7 +124,7 @@ func TestMySQLConfigUnixRequiresAddr(t *testing.T) {
 
 func TestMySQLConfigDriverConfigNilLocKeepsDriverDefault(t *testing.T) {
 	// 直接构造、未设 Loc（nil）时，不应覆盖驱动默认时区。
-	cfg, err := MySQLConfig{Addr: "db:3306"}.driverConfig()
+	cfg, err := MySQLConfig{Addr: "db:3306"}.driverConfig(nil)
 	if err != nil {
 		t.Fatalf("driverConfig: %v", err)
 	}
@@ -132,7 +134,7 @@ func TestMySQLConfigDriverConfigNilLocKeepsDriverDefault(t *testing.T) {
 }
 
 func TestMySQLConfigDriverConfigKeepsCustomNet(t *testing.T) {
-	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig()
+	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig(nil)
 	if err != nil {
 		t.Fatalf("driverConfig: %v", err)
 	}
@@ -142,7 +144,206 @@ func TestMySQLConfigDriverConfigKeepsCustomNet(t *testing.T) {
 }
 
 func TestMySQLConfigDriverConfigAddressError(t *testing.T) {
-	if _, err := (MySQLConfig{}).driverConfig(); !errors.Is(err, ErrAddressRequired) {
+	if _, err := (MySQLConfig{}).driverConfig(nil); !errors.Is(err, ErrAddressRequired) {
 		t.Fatalf("expected ErrAddressRequired, got %v", err)
+	}
+}
+
+func TestMySQLConfigDriverConfigCharset(t *testing.T) {
+	cfg, err := MySQLConfig{Addr: "db:3306", Charset: "utf8mb4"}.driverConfig(nil)
+	if err != nil {
+		t.Fatalf("driverConfig: %v", err)
+	}
+	if dsn := cfg.FormatDSN(); !strings.Contains(dsn, "charset=utf8mb4") {
+		t.Fatalf("expected dsn to contain charset=utf8mb4, got %q", dsn)
+	}
+
+	// 与 collation 协同：两者都进 DSN，连接期发 SET NAMES <charset> COLLATE <collation>。
+	cfg, err = MySQLConfig{Addr: "db:3306", Charset: "utf8mb4", Collation: "utf8mb4_general_ci"}.driverConfig(nil)
+	if err != nil {
+		t.Fatalf("driverConfig: %v", err)
+	}
+	dsn := cfg.FormatDSN()
+	if !strings.Contains(dsn, "charset=utf8mb4") || !strings.Contains(dsn, "collation=utf8mb4_general_ci") {
+		t.Fatalf("expected dsn to contain charset and collation, got %q", dsn)
+	}
+	if cfg.Collation != "utf8mb4_general_ci" {
+		t.Fatalf("unexpected collation %q", cfg.Collation)
+	}
+}
+
+func TestMySQLConfigDriverConfigCharsetFallbackListRejected(t *testing.T) {
+	_, err := MySQLConfig{Addr: "db:3306", Charset: "utf8mb4,utf8"}.driverConfig(nil)
+	if !errors.Is(err, ErrDSNUnsupported) {
+		t.Fatalf("expected ErrDSNUnsupported for charset fallback list, got %v", err)
+	}
+}
+
+func TestWithDSNMapsFields(t *testing.T) {
+	cfg := NewConfig(WithDSN(
+		"alice:secret@tcp(db.internal:3307)/app" +
+			"?charset=utf8mb4&loc=Local&parseTime=true&readTimeout=5s&time_zone=%27%2B00%3A00%27",
+	))
+
+	m := cfg.MySQL
+	if m.User != "alice" || m.Password != "secret" {
+		t.Fatalf("unexpected credentials: %q/%q", m.User, m.Password)
+	}
+	if m.Net != "tcp" || m.Addr != "db.internal:3307" {
+		t.Fatalf("unexpected net/addr: %q/%q", m.Net, m.Addr)
+	}
+	// TCP 地址同步拆出 Host/Port，支撑 WithHost/WithPort 的单字段覆盖。
+	if m.Host != "db.internal" || m.Port != "3307" {
+		t.Fatalf("unexpected host/port: %q/%q", m.Host, m.Port)
+	}
+	if m.Database != "app" {
+		t.Fatalf("unexpected database %q", m.Database)
+	}
+	if m.Charset != "utf8mb4" {
+		t.Fatalf("unexpected charset %q", m.Charset)
+	}
+	if !m.ParseTime || m.Loc != time.Local || m.ReadTimeout != 5*time.Second {
+		t.Fatalf("unexpected parseTime/loc/readTimeout: %v/%v/%v", m.ParseTime, m.Loc, m.ReadTimeout)
+	}
+	if m.SystemVariables["time_zone"] != "'+00:00'" {
+		t.Fatalf("unexpected system variables %v", m.SystemVariables)
+	}
+
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN: %v", err)
+	}
+	if !strings.HasPrefix(dsn, "alice:******@tcp(db.internal:3307)/app") {
+		t.Fatalf("unexpected redacted dsn %q", dsn)
+	}
+}
+
+func TestWithDSNReplacesPackageDefaults(t *testing.T) {
+	// WithDSN 整体替换 MySQL 子配置：DSN 未写的参数按驱动默认，不叠加 DefaultConfig。
+	cfg := NewConfig(WithDSN("user@tcp(db:3306)/app"))
+	if cfg.MySQL.ParseTime {
+		t.Fatal("expected ParseTime to follow dsn semantics (false)")
+	}
+	if cfg.MySQL.Timeout != 0 || cfg.MySQL.ReadTimeout != 0 || cfg.MySQL.WriteTimeout != 0 {
+		t.Fatalf("expected no timeouts, got %v/%v/%v", cfg.MySQL.Timeout, cfg.MySQL.ReadTimeout, cfg.MySQL.WriteTimeout)
+	}
+	if cfg.MySQL.Loc != time.UTC {
+		t.Fatalf("expected driver default loc UTC, got %v", cfg.MySQL.Loc)
+	}
+}
+
+func TestWithDSNLaterOptionOverrides(t *testing.T) {
+	cfg := NewConfig(WithDSN("alice:pw@tcp(db:3306)/app?parseTime=true"), WithDatabase("other"))
+	if cfg.MySQL.Database != "other" {
+		t.Fatalf("expected later option to override database, got %q", cfg.MySQL.Database)
+	}
+	if cfg.MySQL.User != "alice" || !cfg.MySQL.ParseTime {
+		t.Fatalf("expected other dsn fields to survive, got %q/%v", cfg.MySQL.User, cfg.MySQL.ParseTime)
+	}
+}
+
+func TestWithDSNPreservesUnmodeledParams(t *testing.T) {
+	// 本库未建模的驱动参数（含 charset 回退列表）原样保留、透传给驱动，不丢失也不拒绝。
+	cfg := NewConfig(WithDSN(
+		"user@tcp(db:3306)/app?charset=utf8mb4,utf8&compress=true&maxAllowedPacket=16777216&multiStatements=true",
+	))
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN: %v", err)
+	}
+	for _, want := range []string{"charset=utf8mb4,utf8", "compress=true", "maxAllowedPacket=16777216", "multiStatements=true"} {
+		if !strings.Contains(dsn, want) {
+			t.Fatalf("expected redacted dsn to preserve %q, got %q", want, dsn)
+		}
+	}
+	if cfg.MySQL.Charset != "utf8mb4,utf8" {
+		t.Fatalf("expected charset field to mirror dsn value, got %q", cfg.MySQL.Charset)
+	}
+}
+
+func TestWithDSNHostPortOverride(t *testing.T) {
+	// WithHost/WithPort 会清空 Addr，DSN 映射必须同步拆出 Host/Port 才能支撑单字段覆盖。
+	cfg := NewConfig(WithDSN("user@tcp(old-db:3306)/app"), WithHost("new-db"))
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN after WithHost: %v", err)
+	}
+	if !strings.Contains(dsn, "tcp(new-db:3306)") {
+		t.Fatalf("expected host override to take effect, got %q", dsn)
+	}
+
+	cfg = NewConfig(WithDSN("user@tcp(db:3306)/app"), WithPort("4406"))
+	dsn, err = cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN after WithPort: %v", err)
+	}
+	if !strings.Contains(dsn, "tcp(db:4406)") {
+		t.Fatalf("expected port override to take effect, got %q", dsn)
+	}
+}
+
+func TestWithDSNCharsetOverrideAndClear(t *testing.T) {
+	// WithCharset 覆盖 DSN 中的 charset。
+	cfg := NewConfig(WithDSN("user@tcp(db:3306)/app?charset=latin1"), WithCharset("utf8mb4"))
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN: %v", err)
+	}
+	if !strings.Contains(dsn, "charset=utf8mb4") || strings.Contains(dsn, "latin1") {
+		t.Fatalf("expected charset override to utf8mb4, got %q", dsn)
+	}
+
+	// 驱动无公开 API 清除基底 charset：置空报可判定错误，而不是静默保留。
+	cfg = NewConfig(WithDSN("user@tcp(db:3306)/app?charset=utf8mb4"), WithCharset(""))
+	if _, err = cfg.RedactedDSN(); !errors.Is(err, ErrDSNUnsupported) {
+		t.Fatalf("expected ErrDSNUnsupported when clearing dsn charset, got %v", err)
+	}
+}
+
+func TestWithDSNStrictParamDoesNotPanic(t *testing.T) {
+	// 驱动 v1.10.0 对已移除的 strict 参数会 panic，本库须转换为可判定错误。
+	cfg := NewConfig(WithDSN("user@tcp(db:3306)/app?strict=true"))
+	if _, err := cfg.RedactedDSN(); !errors.Is(err, ErrDSNUnsupported) {
+		t.Fatalf("expected ErrDSNUnsupported for removed strict param, got %v", err)
+	}
+}
+
+func TestCharsetIdentifierValidation(t *testing.T) {
+	// charset/collation 作为原始 SQL 片段拼入 SET NAMES，非法标识符必须拒绝。
+	if _, err := (MySQLConfig{Addr: "db:3306", Charset: "utf8mb4; DROP"}).driverConfig(nil); err == nil ||
+		!strings.Contains(err.Error(), "invalid charset") {
+		t.Fatalf("expected invalid charset error, got %v", err)
+	}
+	if _, err := (MySQLConfig{Addr: "db:3306", Charset: "utf8mb4", Collation: "bad collation"}).driverConfig(nil); err == nil ||
+		!strings.Contains(err.Error(), "invalid collation") {
+		t.Fatalf("expected invalid collation error, got %v", err)
+	}
+	if _, err := NewConfig(WithDSN("user@tcp(db:3306)/app?charset=utf8mb4;drop")).RedactedDSN(); err == nil ||
+		!strings.Contains(err.Error(), "invalid charset") {
+		t.Fatalf("expected invalid charset error from dsn, got %v", err)
+	}
+}
+
+func TestMySQLConfigStringOmitsInternalState(t *testing.T) {
+	// MySQLConfig 不携带内部状态字段，%+v/%#v 输出保持稳定、不泄漏实现细节。
+	cfg := NewConfig(WithDSN("alice:secret@tcp(db:3306)/app?charset=utf8mb4"))
+	for _, s := range []string{fmt.Sprintf("%+v", cfg.MySQL), fmt.Sprintf("%#v", cfg.MySQL)} {
+		if strings.Contains(s, "dsn") || strings.Contains(s, "secret") {
+			t.Fatalf("unexpected internal state or secret in output: %s", s)
+		}
+	}
+}
+
+func TestWithDSNParseErrorStickyAndCleared(t *testing.T) {
+	// 解析失败的错误保留至构建期，即便后续 Option 覆盖了字段。
+	cfg := NewConfig(WithDSN("no-slash-dsn"), WithAddress("db:3306"))
+	if _, err := cfg.RedactedDSN(); err == nil || !strings.Contains(err.Error(), "parse dsn") {
+		t.Fatalf("expected sticky parse dsn error, got %v", err)
+	}
+
+	// 之后成功的 WithDSN 整体替换并清除粘滞错误。
+	cfg = NewConfig(WithDSN("no-slash-dsn"), WithDSN("user@tcp(db:3306)/app"))
+	if _, err := cfg.RedactedDSN(); err != nil {
+		t.Fatalf("expected sticky error cleared by later WithDSN, got %v", err)
 	}
 }

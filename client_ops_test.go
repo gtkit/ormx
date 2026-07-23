@@ -555,6 +555,62 @@ func newStubClient(t *testing.T, state **stubDBState) *Client {
 	return client
 }
 
+func TestClientTransactionCommitsWithDefaultTxOptions(t *testing.T) {
+	var state *stubDBState
+	client := newStubClient(t, &state)
+
+	if err := client.Transaction(context.Background(), func(tx *gorm.DB) error {
+		if tx == nil {
+			t.Fatal("expected tx db")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Transaction() error = %v", err)
+	}
+
+	if got := state.beginCount.Load(); got != 1 {
+		t.Fatalf("expected begin count 1, got %d", got)
+	}
+	if got := state.commitCount.Load(); got != 1 {
+		t.Fatalf("expected commit count 1, got %d", got)
+	}
+	// 默认事务选项：非只读。
+	if got := state.readOnlyCount.Load(); got != 0 {
+		t.Fatalf("expected read-only begin count 0, got %d", got)
+	}
+
+	if err := client.Transaction(context.Background(), nil); !errors.Is(err, ErrNilTxFunc) {
+		t.Fatalf("expected ErrNilTxFunc, got %v", err)
+	}
+}
+
+func TestClientTransactionRetriesOnDeadlockAndAcceptsTxOptions(t *testing.T) {
+	mysqlDeadlock := &mysqldriver.MySQLError{Number: mysqlErrDeadlock, Message: "Deadlock found"}
+
+	var state *stubDBState
+	client := newStubClient(t, &state)
+	state.commitErrOnce = mysqlDeadlock
+
+	callCount := 0
+	err := client.Transaction(context.Background(), func(_ *gorm.DB) error {
+		callCount++
+		return nil
+	}, WithRetryBaseWait(time.Millisecond), WithRetryMaxWait(2*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Transaction() expected success after retry, got %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected fn called 2 times (1 deadlock + 1 success), got %d", callCount)
+	}
+
+	// TxOption 透传：WithMaxRetries(0) 禁用重试，死锁直接返回。
+	state.commitErrOnce = mysqlDeadlock
+	err = client.Transaction(context.Background(), func(_ *gorm.DB) error { return nil }, WithMaxRetries(0))
+	if !errors.Is(err, mysqlDeadlock) {
+		t.Fatalf("expected deadlock error without retry, got %v", err)
+	}
+}
+
 func TestWithTxBeginFailureWrapped(t *testing.T) {
 	var state *stubDBState
 	client := newStubClient(t, &state)

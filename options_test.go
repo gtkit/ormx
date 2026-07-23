@@ -1,11 +1,17 @@
 package ormx
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	gormlogger "gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
+
+	"github.com/gtkit/ormx/zlogger"
 )
 
 func TestDefaultLoggerIsDiscard(t *testing.T) {
@@ -43,6 +49,9 @@ func TestOptionsApply(t *testing.T) {
 		{"WithLocation", WithLocation(loc), func(c Config) any { return c.MySQL.Loc }, loc},
 		{"WithTLSConfig", WithTLSConfig("custom"), func(c Config) any { return c.MySQL.TLSConfig }, "custom"},
 		{"WithCollation", WithCollation("utf8mb4_general_ci"), func(c Config) any { return c.MySQL.Collation }, "utf8mb4_general_ci"},
+		{"WithCharset", WithCharset("utf8mb4"), func(c Config) any { return c.MySQL.Charset }, "utf8mb4"},
+		{"WithDSN", WithDSN("alice@tcp(db:3307)/app"), func(c Config) any { return c.MySQL.Addr }, "db:3307"},
+		{"WithZapLogger", WithZapLogger(zap.NewNop()), func(c Config) any { return c.GORM.Logger != nil }, true},
 		{"WithConnectionAttributes", WithConnectionAttributes("program_name:demo"), func(c Config) any { return c.MySQL.ConnectionAttributes }, "program_name:demo"},
 		{"WithSystemVariables", WithSystemVariables(map[string]string{"time_zone": "'+00:00'"}), func(c Config) any { return c.MySQL.SystemVariables["time_zone"] }, "'+00:00'"},
 		{"WithSystemVariables 空 map 不生效", WithSystemVariables(nil), func(c Config) any { return c.MySQL.SystemVariables == nil }, true},
@@ -76,4 +85,28 @@ func TestOptionsApply(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWithZapLoggerWiresZapAndOptions(t *testing.T) {
+	// 日志确实走传入的 zap logger。
+	core, logs := observer.New(zapcore.ErrorLevel)
+	NewConfig(WithZapLogger(zap.New(core))).GORM.Logger.Error(context.Background(), "boom %s", "x")
+	if logs.Len() != 1 {
+		t.Fatalf("expected 1 log entry via injected zap logger, got %d", logs.Len())
+	}
+
+	// 附加 Option 在 logger 注入之后按序生效（last-wins）：Silent 级别抑制输出。
+	core2, logs2 := observer.New(zapcore.ErrorLevel)
+	NewConfig(WithZapLogger(zap.New(core2), zlogger.WithLogLevel(gormlogger.Silent))).
+		GORM.Logger.Error(context.Background(), "suppressed")
+	if logs2.Len() != 0 {
+		t.Fatalf("expected Silent level to suppress logs, got %d", logs2.Len())
+	}
+
+	// nil zap logger 回退 no-op：不输出且不 panic。
+	logger := NewConfig(WithZapLogger(nil)).GORM.Logger
+	if logger == nil {
+		t.Fatal("expected non-nil GORM logger for nil zap logger")
+	}
+	logger.Error(context.Background(), "ignored")
 }

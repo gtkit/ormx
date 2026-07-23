@@ -57,10 +57,15 @@ type Config struct {
 	StartupPingMaxRetries    int
 	StartupPingRetryBaseWait time.Duration
 	StartupPingRetryMaxWait  time.Duration
+
+	// dsn 保存 WithDSN 的内部解析状态（完整驱动配置基底或粘滞的解析错误），
+	// 解析后只读、可在副本间安全共享；nil 表示未使用 WithDSN。
+	dsn *dsnState
 }
 
 // MySQLConfig 描述驱动层连接设置。
 // Addr 与 Host/Port 同时设置时 Addr 优先。
+// Charset 为单一连接字符集（如 "utf8mb4"），不支持逗号分隔的回退列表（见 WithCharset）。
 // 建议通过 Option 辅助函数设置，以保证 Addr/Host/Port 的优先级语义一致。
 type MySQLConfig struct {
 	User                 string            `json:"user"                  yaml:"user"`
@@ -72,6 +77,7 @@ type MySQLConfig struct {
 	Database             string            `json:"database"              yaml:"database"`
 	SystemVariables      map[string]string `json:"system_variables"      yaml:"system_variables"`
 	ConnectionAttributes string            `json:"connection_attributes" yaml:"connection_attributes"`
+	Charset              string            `json:"charset"               yaml:"charset"`
 	Collation            string            `json:"collation"             yaml:"collation"`
 	Loc                  *time.Location    `json:"-"                     yaml:"-"`
 	TLSConfig            string            `json:"tls_config"            yaml:"tls_config"`
@@ -185,7 +191,7 @@ func (c MySQLConfig) redactedString(goSyntax bool) string {
 func DefaultConfig() Config {
 	return Config{
 		MySQL: MySQLConfig{
-			Net:          "tcp",
+			Net:          netTCP,
 			Host:         "127.0.0.1",
 			Port:         "3306",
 			Loc:          time.Local,
@@ -233,7 +239,8 @@ func (c Config) With(opts ...Option) Config {
 // Clone 隔离复制包内可变的配置字段：MySQL.SystemVariables 映射、连接池与方言中的可选指针字段，
 // 使副本与原值互不影响。注意它不深拷贝调用方注入的引用型字段——
 // GORM.Logger、HealthProbe、TxRetryObserver、NamingStrategy.NameReplacer 以及
-// MySQL.Loc（*time.Location，按不可变共享）仍与原值共享同一实例。
+// MySQL.Loc（*time.Location，按不可变共享）仍与原值共享同一实例；
+// WithDSN 的内部解析状态解析后只读，同样按不可变共享。
 func (c Config) Clone() Config {
 	clone := c
 	clone.MySQL.SystemVariables = maps.Clone(c.MySQL.SystemVariables)
@@ -260,7 +267,7 @@ func clonePtr[T any](p *T) *T {
 // context.Background() 执行，受连接读超时（WithReadTimeout）约束而非 ctx。若需严格超时，
 // 设置合理的 ReadTimeout，或用 WithSkipInitializeWithVersion + WithServerVersion 跳过该探测。
 func (c Config) Open(ctx context.Context) (*Client, error) {
-	driverCfg, err := c.MySQL.driverConfig()
+	driverCfg, err := c.MySQL.driverConfig(c.dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +336,7 @@ func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, er
 // 底层驱动配置构建失败时返回错误。为避免泄露，密码、全部连接系统变量（SystemVariables）值
 // 与连接属性（ConnectionAttributes）在非空时统一替换为 "******"，仅保留变量名等结构信息。
 func (c Config) RedactedDSN() (string, error) {
-	driverCfg, err := c.MySQL.redacted().driverConfig()
+	driverCfg, err := c.MySQL.redacted().driverConfig(c.dsn)
 	if err != nil {
 		return "", err
 	}
