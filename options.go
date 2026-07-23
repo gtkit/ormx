@@ -135,7 +135,7 @@ func WithConnectionAttributes(attrs string) Option {
 // WithSystemVariable 追加一个连接系统变量：连接建立后驱动会执行 `SET key = value`，
 // 因此 value 必须是合法的 SQL 表达式（如字符串需自带引号）。它不是 DSN 内置参数——
 // charset、loc、parseTime、timeout 等由专用 Option 处理，请勿经此设置。
-// Params 为 nil 时自动初始化，同名 key 会被覆盖；空 key 会在 Open 时返回错误。
+// SystemVariables 为 nil 时自动初始化，同名 key 会被覆盖；空 key 会在 Open 时返回错误。
 //
 // 安全边界：key/value 作为原始 SQL 直接拼接为 `SET` 语句执行，仅接受可信的静态配置；
 // 切勿传入 HTTP 参数、用户配置等不可信输入，否则存在会话级 SQL 注入风险。
@@ -332,13 +332,6 @@ func WithStartupPingRetry(maxRetries int, baseWait, maxWait time.Duration) Optio
 		if maxWait > 0 {
 			c.StartupPingRetryMaxWait = maxWait
 		}
-	}
-}
-
-// WithDriverName 设置 GORM MySQL 方言使用的底层 SQL 驱动名。
-func WithDriverName(name string) Option {
-	return func(c *Config) {
-		c.Dialect.DriverName = name
 	}
 }
 

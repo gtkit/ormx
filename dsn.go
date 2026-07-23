@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"net"
+	"strings"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
@@ -13,6 +14,9 @@ import (
 // ErrAddressRequired 表示既未提供 Addr，也未同时提供 Host 与 Port；
 // 可用 errors.Is 判定 Open 因缺少连接地址而失败。
 var ErrAddressRequired = errors.New("ormx: mysql address is required")
+
+// ErrSystemVariableNameRequired 表示系统变量名为空或纯空白字符；可用 errors.Is 判定。
+var ErrSystemVariableNameRequired = errors.New("ormx: system variable name must not be empty")
 
 // address 解析最终连接地址：Addr 优先，否则 JoinHostPort(Host, Port)。
 func (c MySQLConfig) address() (string, error) {
@@ -45,8 +49,8 @@ func (c MySQLConfig) driverConfig() (*mysqldriver.Config, error) {
 	cfg.DBName = c.Database
 	cfg.Params = maps.Clone(c.SystemVariables)
 	for key := range cfg.Params {
-		if key == "" {
-			return nil, errors.New("ormx: system variable name must not be empty")
+		if strings.TrimSpace(key) == "" {
+			return nil, ErrSystemVariableNameRequired
 		}
 	}
 	cfg.ConnectionAttributes = c.ConnectionAttributes

@@ -227,8 +227,10 @@ func TestMustOpenPanicsOnInvalidConfig(t *testing.T) {
 }
 
 func TestEmptySystemVariableNameRejected(t *testing.T) {
-	if _, err := NewConfig(WithSystemVariable("", "x")).DriverConfig(); err == nil {
-		t.Fatal("expected error for empty system variable name")
+	for _, key := range []string{"", "  ", "\t"} {
+		if _, err := NewConfig(WithSystemVariable(key, "x")).DriverConfig(); !errors.Is(err, ErrSystemVariableNameRequired) {
+			t.Fatalf("key=%q: expected ErrSystemVariableNameRequired, got %v", key, err)
+		}
 	}
 }
 

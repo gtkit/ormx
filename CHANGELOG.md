@@ -10,10 +10,11 @@
 
 - 导出哨兵错误 `ErrAddressRequired`（原未导出），调用方可用 `errors.Is` 判定 Open 因缺少连接地址而失败
 - 导出哨兵错误 `ErrNilSQLDB`、`ErrNilTxFunc`（原未导出），调用方可用 `errors.Is` 判定向 `OpenWithDB` 传入 nil `*sql.DB`、或向 `WithTx` 传入 nil 事务函数
+- 导出哨兵错误 `ErrSystemVariableNameRequired`，可用 `errors.Is` 判定系统变量名为空或纯空白
 
 ### Security
 
-- `RedactedDSN`（及依赖它的 `Config.String()` / `GoString()`）现在除密码外，还会脱敏连接参数（Params）值与连接属性（ConnectionAttributes），避免 `session_secret` 等敏感绑定值随日志泄露
+- `RedactedDSN`（及依赖它的 `Config.String()` / `GoString()`）现在除密码外，还会脱敏连接系统变量（SystemVariables）值与连接属性（ConnectionAttributes），避免 `session_secret` 等敏感绑定值随日志泄露
 - `MySQLConfig` 新增脱敏的 `String()` / `GoString()`：直接以 `%v` / `%+v` / `%#v` 打印 `Config.MySQL` 子结构时，密码、参数值与连接属性同样被脱敏，不再泄露明文
 - `Client.Config()` 返回的配置快照会把密码、连接参数值与连接属性统一脱敏为占位符，不再返回明文凭据或敏感绑定值；脱敏逻辑统一由 `MySQLConfig` 内部方法提供，各脱敏路径（`String`/`GoString`、`RedactedDSN`、`Client.Config`）共用同一敏感字段清单。打印路径之外的脱敏保证仅覆盖 `fmt`/`Stringer`，请勿将原始 `Config`/`MySQLConfig` 直接用于结构化日志（如 `slog.Any`）
 - `WithSystemVariable`/`WithSystemVariables` 的值作为原始 SQL 拼入 `SET` 语句，仅接受可信静态配置——不可信输入（HTTP 参数、用户配置等）存在会话级 SQL 注入风险，GoDoc/README 已明确该边界；空的系统变量名现在会在 `Open`/`DriverConfig` 时返回错误
@@ -30,6 +31,7 @@
 - 健康模型收敛为单机：移除 `NodeRole` / `NodeState` 类型及 `RoleStandalone` / `HealthStatusDegraded` 等枚举值；`HealthReport` 去掉 `Role`、`State` 字段（`State` 可由 `Status` 推导）；`HealthProbeFunc` 去掉 `role` 参数，签名变为 `func(ctx context.Context, client *Client) error`；连接池指标不再附带 `role` 标签。
 - `PoolConfig` 字段由值类型改为指针（`*int` / `*time.Duration`）：`nil` 表示不设置、保持 database/sql 默认，非 `nil`（含 0）表示显式应用。修复直接结构体赋值或 JSON/YAML 映射连接池参数时因内部标记未置位而静默失效的问题；`WithMaxOpenConns` 等 Option 用法不变。
 - 重命名 `WithDSNParam` / `WithDSNParams` 为 `WithSystemVariable` / `WithSystemVariables`，并将 `MySQLConfig.Params` 字段重命名为 `SystemVariables`（JSON/YAML 标签 `params` → `system_variables`）：其值写入 `mysql.Config.Params`，语义是连接后执行的系统变量 `SET key = value`（非 DSN 内置参数）。旧名称易误用于 charset 等内置参数，故正名；charset/loc/parseTime 等请用对应专用 Option。
+- 移除无效的 `WithDriverName` 与 `MySQLDialectConfig.DriverName`：本库始终以现成 `*sql.DB`（`Conn`）初始化 GORM，驱动仅在 `Conn == nil` 时才使用 `DriverName`，故该配置从不生效，删除不影响任何运行行为。
 
 ### Removed
 

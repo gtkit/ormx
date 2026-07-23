@@ -39,10 +39,12 @@ var ErrNilSQLDB = errors.New("ormx: nil *sql.DB")
 // 连接池（Pool）、GORM 行为（GORM）、方言（Dialect）以及启动期 Ping 重试策略。
 // Config 通过 With / Clone 返回隔离副本（仅复制包内可变字段），不修改原值。注意普通赋值（cfg2 := cfg）
 // 只是浅拷贝，仍与原值共享 SystemVariables map 与连接池等指针字段；需要独立副本时用 Clone 或 With。
-// 字段全部导出以便从配置文件直接映射，但直接修改字段会绕过 Option 的防御逻辑，
-// 合法性由调用方自行保证；优先使用 Option 构建配置。
-// 注意：零值 Config 不携带任何默认值——建议以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段，
-// 以继承推荐的连接池大小、超时与启动 Ping 等默认。Pool 各字段为指针，nil 表示不设置、保持 database/sql 默认。
+// Config 是运行期配置，推荐用 Option（Open / NewConfig / With）构建；直接改字段会绕过 Option 的防御逻辑，
+// 合法性由调用方自行保证。它不承诺可整体序列化——仅 MySQL、Pool 带 JSON/YAML 标签，
+// 而 Logger、HealthProbe、TxRetryObserver、NowFunc、NamingStrategy 等运行时字段无法从配置文件映射；
+// 配置文件驱动的场景建议由业务侧维护自己的 DTO，再转换成 ormx.Option。
+// 注意：零值 Config 不携带任何默认值——需要默认值时以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段。
+// Pool 各字段为指针，nil 表示不设置、保持 database/sql 默认。
 type Config struct {
 	Name                     string
 	MySQL                    MySQLConfig
@@ -61,22 +63,22 @@ type Config struct {
 // Addr 与 Host/Port 同时设置时 Addr 优先。
 // 建议通过 Option 辅助函数设置，以保证 Addr/Host/Port 的优先级语义一致。
 type MySQLConfig struct {
-	User                 string            `json:"user"     yaml:"user"`
-	Password             string            `json:"-"        yaml:"-"`
-	Net                  string            `json:"net"      yaml:"net"`
-	Host                 string            `json:"host"     yaml:"host"`
-	Port                 string            `json:"port"     yaml:"port"`
-	Addr                 string            `json:"addr"     yaml:"addr"`
-	Database             string            `json:"database" yaml:"database"`
-	SystemVariables      map[string]string `json:"system_variables" yaml:"system_variables"`
+	User                 string            `json:"user"                  yaml:"user"`
+	Password             string            `json:"-"                     yaml:"-"`
+	Net                  string            `json:"net"                   yaml:"net"`
+	Host                 string            `json:"host"                  yaml:"host"`
+	Port                 string            `json:"port"                  yaml:"port"`
+	Addr                 string            `json:"addr"                  yaml:"addr"`
+	Database             string            `json:"database"              yaml:"database"`
+	SystemVariables      map[string]string `json:"system_variables"      yaml:"system_variables"`
 	ConnectionAttributes string            `json:"connection_attributes" yaml:"connection_attributes"`
-	Collation            string            `json:"collation" yaml:"collation"`
-	Loc                  *time.Location    `json:"-"        yaml:"-"`
-	TLSConfig            string            `json:"tls_config" yaml:"tls_config"`
-	Timeout              time.Duration     `json:"timeout"  yaml:"timeout"`
-	ReadTimeout          time.Duration     `json:"read_timeout" yaml:"read_timeout"`
-	WriteTimeout         time.Duration     `json:"write_timeout" yaml:"write_timeout"`
-	ParseTime            bool              `json:"parse_time" yaml:"parse_time"`
+	Collation            string            `json:"collation"             yaml:"collation"`
+	Loc                  *time.Location    `json:"-"                     yaml:"-"`
+	TLSConfig            string            `json:"tls_config"            yaml:"tls_config"`
+	Timeout              time.Duration     `json:"timeout"               yaml:"timeout"`
+	ReadTimeout          time.Duration     `json:"read_timeout"          yaml:"read_timeout"`
+	WriteTimeout         time.Duration     `json:"write_timeout"         yaml:"write_timeout"`
+	ParseTime            bool              `json:"parse_time"            yaml:"parse_time"`
 }
 
 // PoolConfig 描述 *sql.DB 连接池参数。
@@ -116,7 +118,6 @@ type GORMConfig struct {
 // MySQLDialectConfig 描述透传给 GORM MySQL 方言（gorm.io/driver/mysql）的配置，
 // 字段与其 Config 中的同名字段一一对应。
 type MySQLDialectConfig struct {
-	DriverName                    string
 	ServerVersion                 string
 	DefaultStringSize             uint
 	DefaultDatetimePrecision      *int
@@ -155,7 +156,7 @@ func (c MySQLConfig) GoString() string { return c.redactedString(true) }
 
 // redacted 返回把密码、连接参数值与连接属性替换为占位符的副本，
 // 是所有脱敏路径（String/GoString、RedactedDSN、Client.Config）的唯一敏感字段清单来源。
-// 值接收者保证不改原值，Params map 先克隆再脱敏，避免污染调用方。
+// 值接收者保证不改原值，SystemVariables map 先克隆再脱敏，避免污染调用方。
 func (c MySQLConfig) redacted() MySQLConfig {
 	if c.Password != "" {
 		c.Password = redactedMask
@@ -232,7 +233,7 @@ func (c Config) With(opts ...Option) Config {
 	return clone
 }
 
-// Clone 隔离复制包内可变的配置字段：MySQL.Params 映射、连接池与方言中的可选指针字段，
+// Clone 隔离复制包内可变的配置字段：MySQL.SystemVariables 映射、连接池与方言中的可选指针字段，
 // 使副本与原值互不影响。注意它不深拷贝调用方注入的引用型字段——
 // GORM.Logger、HealthProbe、TxRetryObserver、NamingStrategy.NameReplacer 以及
 // MySQL.Loc（*time.Location，按不可变共享）仍与原值共享同一实例。
@@ -272,7 +273,9 @@ func (c Config) Open(ctx context.Context) (*Client, error) {
 	sqlDB := sql.OpenDB(connector)
 	client, err := c.openWithSQLDB(ctx, sqlDB, true, driverCfg)
 	if err != nil {
-		_ = sqlDB.Close()
+		if closeErr := sqlDB.Close(); closeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("ormx: close sql db: %w", closeErr))
+		}
 		return nil, err
 	}
 
@@ -414,7 +417,6 @@ func (c Config) gormConfig() *gorm.Config {
 
 func (c Config) dialectorConfig(sqlDB *sql.DB, driverCfg *mysqldriver.Config) gormmysql.Config {
 	cfg := gormmysql.Config{
-		DriverName:                    c.Dialect.DriverName,
 		ServerVersion:                 c.Dialect.ServerVersion,
 		Conn:                          sqlDB,
 		SkipInitializeWithVersion:     c.Dialect.SkipInitializeWithVersion,

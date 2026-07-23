@@ -45,7 +45,6 @@ func TestOptionsApply(t *testing.T) {
 		{"WithQueryFields", WithQueryFields(true), func(c Config) any { return c.GORM.QueryFields }, true},
 		{"WithCreateBatchSize", WithCreateBatchSize(500), func(c Config) any { return c.GORM.CreateBatchSize }, 500},
 		{"WithTranslateError", WithTranslateError(true), func(c Config) any { return c.GORM.TranslateError }, true},
-		{"WithDriverName", WithDriverName("mysql-custom"), func(c Config) any { return c.Dialect.DriverName }, "mysql-custom"},
 		{"WithServerVersion", WithServerVersion("8.4.0"), func(c Config) any { return c.Dialect.ServerVersion }, "8.4.0"},
 		{"WithDefaultStringSize", WithDefaultStringSize(191), func(c Config) any { return c.Dialect.DefaultStringSize }, uint(191)},
 		{"WithDisableDatetimePrecision", WithDisableDatetimePrecision(true), func(c Config) any { return c.Dialect.DisableDatetimePrecision }, true},

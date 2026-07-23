@@ -3,6 +3,7 @@ package ormx
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -549,5 +550,90 @@ func TestWithTxNilFuncReturnsErrNilTxFunc(t *testing.T) {
 	}
 	if txErr := client.WithTx(context.Background(), nil, nil); !errors.Is(txErr, ErrNilTxFunc) {
 		t.Fatalf("expected ErrNilTxFunc, got %v", txErr)
+	}
+}
+
+func newStubClient(t *testing.T, state **stubDBState) *Client {
+	t.Helper()
+	sqlDB, st := newStubDB()
+	if state != nil {
+		*state = st
+	}
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return client
+}
+
+func TestWithTxBeginFailureWrapped(t *testing.T) {
+	var state *stubDBState
+	client := newStubClient(t, &state)
+	state.beginErr = errors.New("begin boom")
+
+	txErr := client.WithTx(context.Background(), nil, func(*gorm.DB) error { return nil })
+	if txErr == nil || !strings.Contains(txErr.Error(), "ormx: begin tx") {
+		t.Fatalf("expected wrapped begin error, got %v", txErr)
+	}
+}
+
+func TestWithTxRollbackErrorJoinedWithBusinessError(t *testing.T) {
+	var state *stubDBState
+	client := newStubClient(t, &state)
+	state.rollbackErr = errors.New("rollback boom")
+
+	bizErr := errors.New("business boom")
+	txErr := client.WithTx(context.Background(), nil, func(*gorm.DB) error { return bizErr })
+	if !errors.Is(txErr, bizErr) {
+		t.Fatalf("expected business error preserved, got %v", txErr)
+	}
+	if !strings.Contains(txErr.Error(), "ormx: rollback tx") {
+		t.Fatalf("expected wrapped rollback error joined, got %v", txErr)
+	}
+}
+
+func TestWithTxPanicRollsBackAndRepanics(t *testing.T) {
+	var state *stubDBState
+	client := newStubClient(t, &state)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected fn panic to propagate")
+		}
+		if got := state.rollbackCount.Load(); got != 1 {
+			t.Fatalf("expected exactly one rollback before repanic, got %d", got)
+		}
+	}()
+	_ = client.WithTx(context.Background(), nil, func(*gorm.DB) error { panic("boom") })
+}
+
+func TestWithTxNonDeadlockCommitErrorNoRetry(t *testing.T) {
+	var state *stubDBState
+	client := newStubClient(t, &state)
+	state.commitErr = errors.New("commit boom") // 非死锁，不应重试
+
+	txErr := client.WithTx(context.Background(), nil, func(*gorm.DB) error { return nil }, WithMaxRetries(3))
+	if txErr == nil || !strings.Contains(txErr.Error(), "ormx: commit tx") {
+		t.Fatalf("expected wrapped commit error, got %v", txErr)
+	}
+	if got := state.beginCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one attempt for non-deadlock error, got %d", got)
+	}
+}
+
+func TestClientCloseErrorWrapped(t *testing.T) {
+	sqlDB, state := newStubDB()
+	state.closeErr = errors.New("close boom")
+	// 先建立一次连接，使 Close 时真正关闭底层 conn 并触发 closeErr。
+	if err := sqlDB.PingContext(context.Background()); err != nil {
+		t.Fatalf("PingContext() error = %v", err)
+	}
+
+	client := &Client{sqlDB: sqlDB, ownsSQLDB: true}
+	if err := client.Close(); err == nil || !strings.Contains(err.Error(), "ormx: close sql db") {
+		t.Fatalf("expected wrapped close error, got %v", err)
 	}
 }

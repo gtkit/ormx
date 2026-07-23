@@ -7,7 +7,6 @@
 | `github.com/gtkit/ormx` | 基于 GORM 的客户端——连接与连接池配置、事务死锁自动重试、单机健康探活与可观测 |
 | `github.com/gtkit/ormx/zlogger` | GORM 的 zap 日志适配——慢查询阈值、trace id 提取、SQL 参数脱敏 |
 
-> 面向 go-jet 的 SQL-first 封装已分离为独立模块 [`github.com/gtkit/jetx`](https://github.com/gtkit/jetx)。
 
 ## 安装
 
@@ -99,7 +98,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | Option | 默认值 | 说明 |
 |--------|--------|------|
 | `WithGormLogger(log)` | GORM 默认 Warn | 设置任意 `gormlogger.Interface` 实现；未设置时输出错误 SQL 与超过 200ms 的慢 SQL |
-| `WithZlogger(opts...)` | 同上 | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`，详见下文 zlogger 章节 |
+| `WithZlogger(opts...)` | 无参为 no-op（静默） | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`；不传 Option 时用 zlogger 默认（no-op logger，静默丢弃，**非** GORM 默认 Warn），须至少 `zlogger.WithLogger(...)` 注入 zap。详见下文 zlogger 章节 |
 | `WithPrepareStmt(enabled)` | `false` | 开启 PreparedStatement 缓存 |
 | `WithPrepareStmtCache(maxSize, ttl)` | 不限制 | PreparedStatement 缓存容量与 TTL |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
@@ -149,7 +148,6 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithDriverName(name)` | `mysql` | 自定义驱动名 |
 | `WithServerVersion(version)` | 自动探测 | 手工指定服务端版本 |
 | `WithSkipInitializeWithVersion(skip)` | `false` | 跳过按版本初始化 |
 | `WithDefaultStringSize(size)` | `0` | string 字段默认长度 |

@@ -45,7 +45,11 @@ func TestIntegrationSystemVariableTakesEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() {
+		if closeErr := client.Close(); closeErr != nil {
+			t.Fatalf("Close() error = %v", closeErr)
+		}
+	})
 
 	var tz string
 	if queryErr := client.DB().WithContext(context.Background()).

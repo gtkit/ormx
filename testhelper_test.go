@@ -10,6 +10,7 @@ import (
 type stubDBState struct {
 	pingErr       error
 	pingErrOnce   error
+	closeErr      error
 	beginErr      error
 	commitErr     error
 	commitErrOnce error // returned once on first commit, then cleared
@@ -72,6 +73,9 @@ func (c *stubConn) Prepare(string) (driver.Stmt, error) {
 }
 
 func (c *stubConn) Close() error {
+	if c.state != nil {
+		return c.state.closeErr
+	}
 	return nil
 }
 

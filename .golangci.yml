@@ -30,6 +30,7 @@ linters:
     - lll
     - makezero
     - mnd
+    - modernize
     - nestif
     - nilerr
     - nilnil
@@ -41,6 +42,7 @@ linters:
     - rowserrcheck
     - sqlclosecheck
     - staticcheck
+    - tagalign
     - testpackage
     - tparallel
     - unconvert
