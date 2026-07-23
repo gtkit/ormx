@@ -153,9 +153,10 @@ func (c MySQLConfig) String() string { return c.redactedString(false) }
 // GoString 实现 fmt.GoStringer，使 %#v 输出同样脱敏。
 func (c MySQLConfig) GoString() string { return c.redactedString(true) }
 
-// redactedString 在值副本上脱敏密码、Params 值与 ConnectionAttributes 后格式化；
-// 通过 plain 别名（无 String/GoString 方法）避免格式化递归。
-func (c MySQLConfig) redactedString(goSyntax bool) string {
+// redacted 返回把密码、连接参数值与连接属性替换为占位符的副本，
+// 是所有脱敏路径（String/GoString、RedactedDSN、Client.Config）的唯一敏感字段清单来源。
+// 值接收者保证不改原值，Params map 先克隆再脱敏，避免污染调用方。
+func (c MySQLConfig) redacted() MySQLConfig {
 	if c.Password != "" {
 		c.Password = redactedMask
 	}
@@ -168,11 +169,17 @@ func (c MySQLConfig) redactedString(goSyntax bool) string {
 	if c.ConnectionAttributes != "" {
 		c.ConnectionAttributes = redactedMask
 	}
+	return c
+}
+
+// redactedString 通过 plain 别名（无 String/GoString 方法）避免格式化递归。
+func (c MySQLConfig) redactedString(goSyntax bool) string {
 	type plain MySQLConfig
+	rc := plain(c.redacted())
 	if goSyntax {
-		return fmt.Sprintf("%#v", plain(c))
+		return fmt.Sprintf("%#v", rc)
 	}
-	return fmt.Sprintf("%+v", plain(c))
+	return fmt.Sprintf("%+v", rc)
 }
 
 // DefaultConfig 返回带合理默认值的 Config：
@@ -258,7 +265,7 @@ func (c Config) Open(ctx context.Context) (*Client, error) {
 
 	connector, err := mysqldriver.NewConnector(driverCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ormx: create mysql connector: %w", err)
 	}
 
 	sqlDB := sql.OpenDB(connector)
@@ -315,18 +322,9 @@ func (c Config) DriverConfig() (*mysqldriver.Config, error) {
 // 底层 DriverConfig 构建失败时返回错误。为避免泄露，密码、全部连接参数（Params）值
 // 与连接属性（ConnectionAttributes）在非空时统一替换为 "******"，仅保留参数名等结构信息。
 func (c Config) RedactedDSN() (string, error) {
-	driverCfg, err := c.DriverConfig()
+	driverCfg, err := c.MySQL.redacted().driverConfig()
 	if err != nil {
 		return "", err
-	}
-	if driverCfg.Passwd != "" {
-		driverCfg.Passwd = redactedMask
-	}
-	for key := range driverCfg.Params {
-		driverCfg.Params[key] = redactedMask
-	}
-	if driverCfg.ConnectionAttributes != "" {
-		driverCfg.ConnectionAttributes = redactedMask
 	}
 	return driverCfg.FormatDSN(), nil
 }
@@ -342,13 +340,13 @@ func (c Config) openWithSQLDB(
 
 	if clone.StartupPing {
 		if err := pingWithRetry(normalizeContext(ctx), sqlDB, clone); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("ormx: startup ping: %w", err)
 		}
 	}
 
 	gdb, err := gorm.Open(gormmysql.New(clone.dialectorConfig(sqlDB, driverCfg)), clone.gormConfig())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ormx: initialize gorm: %w", err)
 	}
 
 	return &Client{
@@ -360,9 +358,11 @@ func (c Config) openWithSQLDB(
 }
 
 func pingWithRetry(ctx context.Context, sqlDB *sql.DB, cfg Config) error {
+	// 先 Ping、再按 attempt 判断是否重试；用 attempt >= maxRetries 退出，
+	// 避免 maxRetries+1 在极大值时整数溢出导致循环零次、静默跳过 Ping。
 	var lastErr error
 	maxRetries := max(cfg.StartupPingMaxRetries, 0)
-	for attempt := range maxRetries + 1 {
+	for attempt := 0; ; attempt++ {
 		lastErr = sqlDB.PingContext(ctx)
 		if lastErr == nil {
 			return nil
@@ -380,7 +380,6 @@ func pingWithRetry(ctx context.Context, sqlDB *sql.DB, cfg Config) error {
 		case <-timer.C:
 		}
 	}
-	return lastErr
 }
 
 func (c Config) gormConfig() *gorm.Config {

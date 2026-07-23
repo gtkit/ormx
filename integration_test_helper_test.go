@@ -101,7 +101,7 @@ func (h *integrationMySQLHarness) newConfig(t *testing.T, name string) Config {
 		WithUser(h.baseDSN.User),
 		WithPassword(h.baseDSN.Passwd),
 		WithParseTime(h.baseDSN.ParseTime),
-		WithDSNParams(h.baseDSN.Params),
+		WithSystemVariables(h.baseDSN.Params),
 	}
 
 	if h.baseDSN.Loc != nil {

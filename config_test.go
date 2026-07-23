@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestDriverConfigAndRedactedDSN(t *testing.T) {
@@ -19,7 +22,7 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 		WithTimeout(15*time.Second),
 		WithReadTimeout(3*time.Second),
 		WithWriteTimeout(4*time.Second),
-		WithDSNParam("loc", "ignored-by-driver-config"),
+		WithSystemVariable("loc", "ignored-by-driver-config"),
 	)
 
 	driverCfg, err := cfg.DriverConfig()
@@ -60,7 +63,7 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 
 func TestConfigCloneIsIsolated(t *testing.T) {
 	base := DefaultConfig()
-	clone := base.With(WithDSNParam("readPreference", "secondary"))
+	clone := base.With(WithSystemVariable("readPreference", "secondary"))
 	clone.MySQL.Params["readPreference"] = "primary"
 
 	if _, ok := base.MySQL.Params["readPreference"]; ok {
@@ -158,7 +161,7 @@ func TestRedactedDSNMasksParamsAndAttributes(t *testing.T) {
 	cfg := NewConfig(
 		WithUser("u"),
 		WithPassword("pw-secret"),
-		WithDSNParam("session_secret", "param-secret"),
+		WithSystemVariable("session_secret", "param-secret"),
 		WithConnectionAttributes("attribute-secret"),
 	)
 
@@ -180,7 +183,7 @@ func TestMySQLConfigStringRedactsSecrets(t *testing.T) {
 	cfg := NewConfig(
 		WithUser("u"),
 		WithPassword("pw-secret"),
-		WithDSNParam("session_secret", "param-secret"),
+		WithSystemVariable("session_secret", "param-secret"),
 		WithConnectionAttributes("attribute-secret"),
 	)
 	for _, printed := range []string{
@@ -197,6 +200,73 @@ func TestMySQLConfigStringRedactsSecrets(t *testing.T) {
 	// 脱敏在副本上进行，不得污染原始 Params。
 	if cfg.MySQL.Params["session_secret"] != "param-secret" {
 		t.Fatalf("printing mutated original Params: %v", cfg.MySQL.Params)
+	}
+}
+
+func TestConfigStringAndGoStringRedact(t *testing.T) {
+	cfg := NewConfig(
+		WithUser("u"), WithPassword("pw-secret"), WithDatabase("app"),
+		WithSystemVariable("session_secret", "param-secret"),
+	)
+	for _, printed := range []string{cfg.String(), cfg.GoString(), fmt.Sprintf("%v", cfg), fmt.Sprintf("%#v", cfg)} {
+		for _, secret := range []string{"pw-secret", "param-secret"} {
+			if strings.Contains(printed, secret) {
+				t.Fatalf("Config print leaked %q: %s", secret, printed)
+			}
+		}
+	}
+}
+
+func TestMustOpenPanicsOnInvalidConfig(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected MustOpen to panic on invalid config")
+		}
+	}()
+	_ = MustOpen(context.Background(), WithHost(""), WithPort(""), WithAddress(""))
+}
+
+func TestWithLocationNilKeepsDefault(t *testing.T) {
+	if cfg := NewConfig(WithLocation(nil)); cfg.MySQL.Loc != time.Local {
+		t.Fatalf("nil WithLocation should keep default time.Local, got %v", cfg.MySQL.Loc)
+	}
+	custom := time.FixedZone("x", 3600)
+	if cfg := NewConfig(WithLocation(custom)); cfg.MySQL.Loc != custom {
+		t.Fatalf("custom location not applied, got %v", cfg.MySQL.Loc)
+	}
+}
+
+func TestPingRetryExecutesWithHugeMaxRetries(t *testing.T) {
+	sqlDB, state := newStubDB()
+	defer sqlDB.Close()
+	if _, err := OpenWithDB(context.Background(), sqlDB,
+		WithStartupPing(true),
+		WithStartupPingRetry(math.MaxInt, time.Millisecond, time.Millisecond),
+		WithSkipInitializeWithVersion(true)); err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	if got := state.pingCount.Load(); got != 1 {
+		t.Fatalf("expected ping executed once despite MaxInt retries, got %d", got)
+	}
+}
+
+func TestWithTxExecutesWithHugeMaxRetries(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	ran := false
+	if txErr := client.WithTx(context.Background(), nil, func(*gorm.DB) error {
+		ran = true
+		return nil
+	}, WithMaxRetries(math.MaxInt)); txErr != nil {
+		t.Fatalf("WithTx() error = %v", txErr)
+	}
+	if !ran {
+		t.Fatal("expected tx fn to execute at least once despite MaxInt retries")
 	}
 }
 

@@ -58,7 +58,7 @@ tag:
 release-patch: ## 发布 PATCH 版本（bug 修复 / 文档 / 内部重构）
 	@$(MAKE) tag BUMP=patch
 
-release-minor: ## 发布 MINOR 版本（向后兼容新增导出 API / Option）
+release-minor: ## 发布 MINOR 版本（新增功能，或按本项目策略承载破坏性变更）
 	@$(MAKE) tag BUMP=minor
 
 gittag:

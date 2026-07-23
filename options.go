@@ -80,8 +80,12 @@ func WithParseTime(enabled bool) Option {
 }
 
 // WithLocation 设置解析时间值使用的时区。默认 time.Local。
+// 传入 nil 会被忽略并保留原值，避免覆盖默认后在时间解析时因 nil Location 触发 panic。
 func WithLocation(loc *time.Location) Option {
 	return func(c *Config) {
+		if loc == nil {
+			return
+		}
 		c.MySQL.Loc = loc
 	}
 }
@@ -128,9 +132,11 @@ func WithConnectionAttributes(attrs string) Option {
 	}
 }
 
-// WithDSNParam 设置单个额外的 DSN 连接参数；
+// WithSystemVariable 追加一个连接系统变量：连接建立后驱动会执行 `SET key = value`，
+// 因此 value 必须是合法的 SQL 表达式（如字符串需自带引号）。它不是 DSN 内置参数——
+// charset、loc、parseTime、timeout 等由专用 Option 处理，请勿经此设置。
 // Params 为 nil 时自动初始化，同名 key 会被覆盖。
-func WithDSNParam(key, value string) Option {
+func WithSystemVariable(key, value string) Option {
 	return func(c *Config) {
 		if c.MySQL.Params == nil {
 			c.MySQL.Params = make(map[string]string)
@@ -139,9 +145,9 @@ func WithDSNParam(key, value string) Option {
 	}
 }
 
-// WithDSNParams 批量合并额外的 DSN 连接参数，同名 key 会被覆盖；
+// WithSystemVariables 批量追加连接系统变量（语义同 WithSystemVariable：连接后 `SET key = value`），同名 key 会被覆盖；
 // 传入 nil 或空 map 时不做任何修改。
-func WithDSNParams(params map[string]string) Option {
+func WithSystemVariables(params map[string]string) Option {
 	return func(c *Config) {
 		if len(params) == 0 {
 			return

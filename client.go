@@ -3,6 +3,7 @@ package ormx
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"gorm.io/gorm"
 )
@@ -26,19 +27,20 @@ func (c *Client) SQLDB() *sql.DB {
 	return c.sqlDB
 }
 
-// Config 返回客户端配置的脱敏快照：深拷贝并把密码替换为占位符，
-// 不含明文凭据，仅供检视。需要真实密码请由调用方保留原始配置。
+// Config 返回客户端配置的脱敏快照：深拷贝后把密码、连接参数值与连接属性替换为占位符，
+// 不含明文凭据或敏感绑定值，仅供检视。需要真实值请由调用方保留原始配置。
 func (c *Client) Config() Config {
 	cfg := c.config.Clone()
-	if cfg.MySQL.Password != "" {
-		cfg.MySQL.Password = redactedMask
-	}
+	cfg.MySQL = cfg.MySQL.redacted()
 	return cfg
 }
 
 // PingContext 检测数据库连接是否可用。
 func (c *Client) PingContext(ctx context.Context) error {
-	return c.sqlDB.PingContext(normalizeContext(ctx))
+	if err := c.sqlDB.PingContext(normalizeContext(ctx)); err != nil {
+		return fmt.Errorf("ormx: ping: %w", err)
+	}
+	return nil
 }
 
 // Stats 返回底层连接池的统计信息。

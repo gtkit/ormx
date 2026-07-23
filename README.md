@@ -82,8 +82,8 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithTLSConfig(name)` | 空 | TLS 配置名（需先用 `mysql.RegisterTLSConfig` 注册） |
 | `WithCollation(collation)` | 驱动默认 | 连接 collation |
 | `WithConnectionAttributes(attrs)` | 空 | 连接属性（`performance_schema.session_connect_attrs`） |
-| `WithDSNParam(key, value)` | — | 追加单个自定义 DSN 参数（如 `charset`） |
-| `WithDSNParams(params)` | — | 批量追加 DSN 参数 |
+| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式。**非** DSN 内置参数（charset/loc/parseTime 等有专用 Option） |
+| `WithSystemVariables(params)` | — | 批量追加连接系统变量，语义同上 |
 
 #### 连接池
 
@@ -234,6 +234,22 @@ ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client) error {
     var one int
     return c.DB().WithContext(ctx).Raw("SELECT 1").Scan(&one).Error
 })
+```
+
+### 错误处理
+
+以下导出哨兵错误可用 `errors.Is` 判定：
+
+| 错误 | 触发场景 |
+|------|---------|
+| `ormx.ErrAddressRequired` | 既未提供 `Addr`、又缺 `Host` 或 `Port` |
+| `ormx.ErrNilSQLDB` | 向 `OpenWithDB` 传入 nil `*sql.DB` |
+| `ormx.ErrNilTxFunc` | 向 `WithTx` 传入 nil 事务函数 |
+
+```go
+if _, err := ormx.Open(ctx, /* ...缺少地址... */); errors.Is(err, ormx.ErrAddressRequired) {
+    // 配置缺少连接地址
+}
 ```
 
 ---

@@ -474,6 +474,8 @@ func TestClientConfigRedactsPasswordAndReturnsCopy(t *testing.T) {
 	defer sqlDB.Close()
 	client, err := OpenWithDB(context.Background(), sqlDB,
 		WithName("orders"), WithPassword("pw-secret"),
+		WithSystemVariable("session_secret", "param-secret"),
+		WithConnectionAttributes("attribute-secret"),
 		WithStartupPing(false), WithSkipInitializeWithVersion(true))
 	if err != nil {
 		t.Fatalf("OpenWithDB() error = %v", err)
@@ -482,6 +484,12 @@ func TestClientConfigRedactsPasswordAndReturnsCopy(t *testing.T) {
 	got := client.Config()
 	if got.MySQL.Password == "pw-secret" {
 		t.Fatal("Config() leaked plaintext password")
+	}
+	if got.MySQL.Params["session_secret"] == "param-secret" {
+		t.Fatal("Config() leaked plaintext param value")
+	}
+	if got.MySQL.ConnectionAttributes == "attribute-secret" {
+		t.Fatal("Config() leaked plaintext connection attribute")
 	}
 	if got.Name != "orders" {
 		t.Fatalf("expected name orders, got %q", got.Name)

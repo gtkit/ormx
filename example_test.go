@@ -43,7 +43,8 @@ func ExampleWithZlogger() {
 	// Output: true
 }
 
-// Config 是值语义：With 返回应用新 Option 后的副本，原配置不受影响。
+// With 返回应用新 Option 后的隔离副本，原配置不受影响
+// （普通赋值 cfg2 := cfg 只是浅拷贝、仍共享 map 与指针字段，隔离请用 With/Clone）。
 func ExampleConfig_With() {
 	base := ormx.NewConfig(ormx.WithName("base"))
 	derived := base.With(ormx.WithName("derived"))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -80,6 +81,8 @@ func WithRetryMaxWait(d time.Duration) TxOption {
 // WithTx 在事务中执行 fn：fn 返回 nil 则提交，返回 error 则回滚。
 // 遇到 MySQL 死锁（1213）或锁等待超时（1205）时按带抖动的指数退避自动重试，
 // 重试行为可通过 TxOption 调整；fn 为 nil 时返回错误。
+// 若 fn 发生 panic，事务会先回滚，随后 panic 继续向上传播（不被吞没为 error），
+// 以保留调用方自身的 panic 处理语义。
 func (c *Client) WithTx(
 	ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error, txOpts ...TxOption,
 ) error {
@@ -108,8 +111,10 @@ func (c *Client) withTxRetry(
 	ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error,
 	maxRetries int, baseWait, maxWait time.Duration,
 ) error {
+	// 先执行、再按 attempt 判断是否重试；用 attempt >= maxRetries 退出，
+	// 避免 maxRetries+1 在极大值时整数溢出导致循环零次、静默跳过事务。
 	var lastErr error
-	for attempt := range maxRetries + 1 {
+	for attempt := 0; ; attempt++ {
 		lastErr = c.execTx(ctx, opts, fn)
 		if lastErr == nil {
 			return nil
@@ -117,28 +122,28 @@ func (c *Client) withTxRetry(
 		if !isDeadlock(lastErr) {
 			return lastErr
 		}
-		// 检测到死锁后进行带抖动的退避重试，最后一次不再等待。
-		if attempt < maxRetries {
-			sleep := retryBackoff(attempt, baseWait, maxWait)
-			if observer := c.config.TxRetryObserver; observer != nil {
-				observer(ctx, TxRetryEvent{
-					ClientName: c.effectiveName(),
-					Attempt:    attempt + 1,
-					MaxRetries: maxRetries,
-					Wait:       sleep,
-					Err:        lastErr,
-				})
-			}
-			timer := time.NewTimer(sleep)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return errors.Join(lastErr, ctx.Err())
-			case <-timer.C:
-			}
+		if attempt >= maxRetries {
+			return lastErr
+		}
+		// 检测到死锁后进行带抖动的退避重试。
+		sleep := retryBackoff(attempt, baseWait, maxWait)
+		if observer := c.config.TxRetryObserver; observer != nil {
+			observer(ctx, TxRetryEvent{
+				ClientName: c.effectiveName(),
+				Attempt:    attempt + 1,
+				MaxRetries: maxRetries,
+				Wait:       sleep,
+				Err:        lastErr,
+			})
+		}
+		timer := time.NewTimer(sleep)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(lastErr, ctx.Err())
+		case <-timer.C:
 		}
 	}
-	return lastErr
 }
 
 // WithReadTx 在只读事务中执行 fn，重试行为与 WithTx 的默认值一致。
@@ -156,7 +161,7 @@ func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *go
 		tx = txDB.Begin()
 	}
 	if tx.Error != nil {
-		return tx.Error
+		return fmt.Errorf("ormx: begin tx: %w", tx.Error)
 	}
 
 	defer func() {
@@ -170,7 +175,10 @@ func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *go
 		return errors.Join(err, rollbackError(tx))
 	}
 
-	return tx.Commit().Error
+	if err = tx.Commit().Error; err != nil {
+		return fmt.Errorf("ormx: commit tx: %w", err)
+	}
+	return nil
 }
 
 func rollbackError(tx *gorm.DB) error {

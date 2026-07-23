@@ -34,6 +34,7 @@ func retryBackoff(attempt int, baseWait, maxWait time.Duration) time.Duration {
 		return maxWait
 	}
 	const jitterDivisor = 2
-	jitter := time.Duration(rand.Int64N(int64(wait/jitterDivisor) + 1)) //nolint:gosec // jitter for backoff, not security
+	// #nosec G404 -- 退避抖动非安全用途，math/rand/v2 足够
+	jitter := time.Duration(rand.Int64N(int64(wait/jitterDivisor) + 1))
 	return min(wait+jitter, maxWait)
 }
