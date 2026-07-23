@@ -44,12 +44,8 @@ func (c *Client) PingContext(ctx context.Context) error {
 	return nil
 }
 
-// Stats 返回底层连接池的统计信息。
-func (c *Client) Stats() sql.DBStats {
-	return c.sqlDB.Stats()
-}
-
-// Close 关闭底层 *sql.DB。仅当 Client 拥有该连接时才真正关闭，否则直接返回 nil。
+// Close 先释放 GORM 预编译语句缓存（启用 WithPrepareStmt 时；GORM 以异步方式关闭已缓存语句），
+// 再关闭底层 *sql.DB——仅当 Client 拥有该连接时才真正关闭，否则（OpenWithDB 场景）不关闭外部 DB。
 func (c *Client) Close() error {
 	// 先释放 GORM 预编译语句缓存（启用 WithPrepareStmt 时存在）。即使不拥有 sqlDB
 	// （OpenWithDB 场景），该缓存也由本 Client 持有，必须关闭以释放服务端预编译语句。

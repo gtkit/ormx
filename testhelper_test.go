@@ -8,18 +8,20 @@ import (
 )
 
 type stubDBState struct {
-	pingErr       error
-	pingErrOnce   error
-	closeErr      error
-	beginErr      error
-	commitErr     error
-	commitErrOnce error // returned once on first commit, then cleared
-	rollbackErr   error
-	pingCount     atomic.Int32
-	beginCount    atomic.Int32
-	readOnlyCount atomic.Int32
-	commitCount   atomic.Int32
-	rollbackCount atomic.Int32
+	pingErr        error
+	pingErrOnce    error
+	closeErr       error
+	beginErr       error
+	commitErr      error
+	commitErrOnce  error // returned once on first commit, then cleared
+	rollbackErr    error
+	pingCount      atomic.Int32
+	beginCount     atomic.Int32
+	readOnlyCount  atomic.Int32
+	commitCount    atomic.Int32
+	rollbackCount  atomic.Int32
+	prepareCount   atomic.Int32
+	stmtCloseCount atomic.Int32
 }
 
 type stubDBOption func(*stubDBState)
@@ -69,7 +71,10 @@ type stubConn struct {
 }
 
 func (c *stubConn) Prepare(string) (driver.Stmt, error) {
-	return stubStmt{}, nil
+	if c.state != nil {
+		c.state.prepareCount.Add(1)
+	}
+	return stubStmt{state: c.state}, nil
 }
 
 func (c *stubConn) Close() error {
@@ -111,9 +116,12 @@ func (c *stubConn) Ping(context.Context) error {
 	return nil
 }
 
-type stubStmt struct{}
+type stubStmt struct{ state *stubDBState }
 
-func (stubStmt) Close() error {
+func (s stubStmt) Close() error {
+	if s.state != nil {
+		s.state.stmtCloseCount.Add(1)
+	}
 	return nil
 }
 

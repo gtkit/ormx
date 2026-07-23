@@ -81,6 +81,7 @@ func WithRetryMaxWait(d time.Duration) TxOption {
 // WithTx 在事务中执行 fn：fn 返回 nil 则提交，返回 error 则回滚。
 // 遇到 MySQL 死锁（1213）或锁等待超时（1205）时按带抖动的指数退避自动重试，
 // 重试行为可通过 TxOption 调整；fn 为 nil 时返回错误。
+// 由于会重试，fn 可能被多次调用，必须可重入且幂等（不要依赖闭包外的一次性副作用）。
 // 若 fn 发生 panic，事务会先回滚，随后 panic 继续向上传播（不被吞没为 error），
 // 以保留调用方自身的 panic 处理语义。
 func (c *Client) WithTx(

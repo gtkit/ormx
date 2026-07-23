@@ -612,16 +612,33 @@ func TestWithTxNonDeadlockCommitErrorNoRetry(t *testing.T) {
 }
 
 func TestClientClosePreparedStmtCache(t *testing.T) {
-	sqlDB, _ := newStubDB()
+	sqlDB, state := newStubDB()
 	defer sqlDB.Close()
 	client, err := OpenWithDB(context.Background(), sqlDB,
 		WithPrepareStmt(true), WithStartupPing(false), WithSkipInitializeWithVersion(true))
 	if err != nil {
 		t.Fatalf("OpenWithDB() error = %v", err)
 	}
-	// OpenWithDB 不拥有 sqlDB，但仍应关闭 GORM 预编译语句缓存且不报错。
+
+	// 执行一次查询，使 GORM 在 PrepareStmt 下预编译并缓存语句。
+	if execErr := client.DB().Exec("SELECT 1").Error; execErr != nil {
+		t.Fatalf("Exec() error = %v", execErr)
+	}
+	if got := state.prepareCount.Load(); got == 0 {
+		t.Fatal("expected at least one prepared statement to be created")
+	}
+
+	// OpenWithDB 不拥有 sqlDB，但仍应关闭预编译缓存、释放已缓存的语句。
 	if closeErr := client.Close(); closeErr != nil {
 		t.Fatalf("Close() error = %v", closeErr)
+	}
+	// GORM 经 LRU 驱逐回调以 `go v.Close()` 异步关闭已缓存语句，轮询等待其完成。
+	deadline := time.Now().Add(2 * time.Second)
+	for state.stmtCloseCount.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := state.stmtCloseCount.Load(); got == 0 {
+		t.Fatal("expected cached prepared statement(s) to be closed on Close")
 	}
 }
 

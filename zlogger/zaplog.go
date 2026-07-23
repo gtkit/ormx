@@ -40,12 +40,14 @@ type gormLogger struct {
 var _ gormlogger.Interface = (*gormLogger)(nil)
 
 // New 按给定 Option 构造一个 gormLogger 并以 gormlogger.Interface 返回。
-// 默认使用 no-op logger、慢查询阈值 200ms、日志级别 Warn；nil Option 会被跳过。
+// 默认使用 no-op logger、慢查询阈值 200ms、日志级别 Warn、参数化查询开启（不记录绑定参数值）；
+// nil Option 会被跳过。调试需要看真实参数值时用 WithParameterizedQueries(false) 显式关闭。
 func New(options ...Option) gormlogger.Interface {
 	logger := &gormLogger{
-		zapLogger:     nopLogger,
-		slowThreshold: slowTime,
-		logLevel:      gormlogger.Warn,
+		zapLogger:            nopLogger,
+		slowThreshold:        slowTime,
+		logLevel:             gormlogger.Warn,
+		parameterizedQueries: true,
 	}
 	for _, option := range options {
 		if option != nil {

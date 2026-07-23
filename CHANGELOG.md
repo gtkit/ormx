@@ -18,6 +18,8 @@
 - `MySQLConfig` 新增脱敏的 `String()` / `GoString()`：直接以 `%v` / `%+v` / `%#v` 打印 `Config.MySQL` 子结构时，密码、参数值与连接属性同样被脱敏，不再泄露明文
 - `Client.Config()` 返回的配置快照会把密码、连接参数值与连接属性统一脱敏为占位符，不再返回明文凭据或敏感绑定值；脱敏逻辑统一由 `MySQLConfig` 内部方法提供，各脱敏路径（`String`/`GoString`、`RedactedDSN`、`Client.Config`）共用同一敏感字段清单。打印路径之外的脱敏保证仅覆盖 `fmt`/`Stringer`，请勿将原始 `Config`/`MySQLConfig` 直接用于结构化日志（如 `slog.Any`）
 - `WithSystemVariable`/`WithSystemVariables` 的值作为原始 SQL 拼入 `SET` 语句，仅接受可信静态配置——不可信输入（HTTP 参数、用户配置等）存在会话级 SQL 注入风险，GoDoc/README 已明确该边界；空的系统变量名现在会在 `Open`/`DriverConfig` 时返回错误
+- `WithGormLogger(nil)` 或直接构造 nil Logger 不再绕过安全默认：`gormConfig()` 会把 nil 兜底为 `gormlogger.Discard`，避免 GORM 恢复自己的默认日志器（stdout、含参数）
+- `zlogger` 参数化查询默认改为开启（原默认关闭）：注入真实 zap logger 时默认不再把绑定参数写入日志；调试需要真实参数值时用 `WithParameterizedQueries(false)` 显式关闭
 
 ### Fixed
 
@@ -37,6 +39,10 @@
 - 移除 `Client.Metrics()` 与 `MetricSample`：与 `StatsSnapshot()` 信息重复且无法区分 gauge/counter，改由业务监控层基于 `StatsSnapshot()` 自行对接（正确选择 gauge/counter 语义）。
 - 移除 `MySQLDialectConfig` 中仅用于旧版 MySQL/MariaDB 兼容、且无 Option/无测试的 `DontSupport*` 字段（6 个）：本库目标为 MySQL 8，GORM 会在初始化时按版本自动推导这些标志。
 - `zlogger.GormLogger` 类型改为非导出：其字段全私有、`New` 返回 `gormlogger.Interface`，导出具体类型无实际用途。
+- `OpenWithDB` 不再对借用的外部连接池强加包内默认（50/10/30m/10m），仅应用调用方显式传入的池 Option，未覆盖项保持外部 `*sql.DB` 现有设置。
+- 移除 `Client.Stats()`：与 `SQLDB().Stats()` 完全等价，请改用后者或 `StatsSnapshot()`。
+- `Config.DriverConfig()` 不再导出（原会暴露含明文密码的驱动配置）；内部构建改用私有路径。
+- `zlogger` 参数化查询默认改为开启（见 Security 一节，属默认行为变更）。
 
 ### Removed
 

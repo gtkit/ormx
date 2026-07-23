@@ -20,7 +20,7 @@
 // 事务通过 [Client.WithTx] 执行，遇 MySQL 死锁（1213）或锁等待超时（1205）
 // 自动按带抖动的指数退避重试。
 //
-// 连接健康检查与连接池指标见 [Client.HealthCheck]、[Client.StatsSnapshot] 与 [Client.Metrics]。
+// 连接健康检查与连接池统计见 [Client.HealthCheck] 与 [Client.StatsSnapshot]。
 //
 // [Client] 可在多个 goroutine 间并发使用；调用方注入的 logger、HealthProbe、
 // TxRetryObserver 的并发安全由调用方保证。

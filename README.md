@@ -45,7 +45,7 @@ db := client.DB() // *gorm.DB，直接走 GORM API
 | `ormx.Open(ctx, opts...)` | 按 Option 构建配置并连接，最常用 |
 | `ormx.MustOpen(ctx, opts...)` | 同上，失败时 panic，适合启动期 wiring |
 | `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（连接池设置仍会应用）；`sqlDB` 所有权归调用方，`Close()` 不会关闭它 |
-| `ormx.NewConfig(opts...)` / `cfg.With(opts...)` / `cfg.Open(ctx)` | 先构建 `Config` 值再打开，适合从配置文件映射、多实例复用基础配置 |
+| `ormx.NewConfig(opts...)` / `cfg.With(opts...)` / `cfg.Open(ctx)` | 先构建 `Config` 值再打开，适合多实例复用基础配置（`Config` 是运行期配置，配置文件请由业务侧 DTO 转成 Option，详见 `Config` 的 GoDoc） |
 
 `Config` 通过 `With` / `Clone` 返回隔离副本（仅复制包内可变字段：`SystemVariables` map、连接池与方言指针），不修改原值；注入的 `GORM.Logger`、`HealthProbe`、`TxRetryObserver`、`NamingStrategy.NameReplacer` 与 `Loc` 仍为共享引用。普通赋值（`cfg2 := cfg`）是浅拷贝，需独立副本时用 `Clone`/`With`。`Config.String()`（及 `MySQLConfig.String()`）与 `%v` / `%+v` / `%#v` 输出会把密码、参数值与连接属性脱敏为 `******`，可放心打日志；`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。注意：脱敏仅覆盖 `fmt`/`Stringer` 路径，**不要把原始 `Config`/`MySQLConfig` 直接传给结构化日志器（如 `slog.Any`）或用于序列化日志**——请改用 `String()` 或 `RedactedDSN()`。
 
@@ -81,7 +81,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithTLSConfig(name)` | 空 | TLS 配置名（需先用 `mysql.RegisterTLSConfig` 注册） |
 | `WithCollation(collation)` | 驱动默认 | 连接 collation |
 | `WithConnectionAttributes(attrs)` | 空 | 连接属性（`performance_schema.session_connect_attrs`） |
-| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式。**非** DSN 内置参数（charset/loc/parseTime 等有专用 Option） |
+| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式、且仅接受可信静态配置。**非** DSN 内置参数（`loc`→`WithLocation`、`parseTime`→`WithParseTime` 等；`charset` 目前无专用 Option，如需请经 DSN/驱动设置） |
 | `WithSystemVariables(params)` | — | 批量追加连接系统变量，语义同上 |
 
 #### 连接池
@@ -163,7 +163,7 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 | `Config() Config` | 配置的脱敏快照（隔离副本，密码/参数值/连接属性已脱敏，不含明文凭据） |
 | `Name() string` | 实例名（未设置时为 `default`） |
 | `PingContext(ctx) error` | 连通性检查 |
-| `Stats() sql.DBStats` / `StatsSnapshot()` | 连接池统计（`StatsSnapshot` 额外含 `Utilization`），业务层可据此自行对接监控 |
+| `StatsSnapshot() DBStatsSnapshot` | 连接池统计快照（额外含 `Utilization`），业务层据此自行对接监控；需原始 `sql.DBStats` 用 `SQLDB().Stats()` |
 | `HealthCheck(ctx) HealthReport` | 健康检查（Ping + 自定义探针，默认 5s 超时） |
 | `WithTx` / `WithReadTx` | 事务，见下节 |
 | `Close() error` | 关闭连接池（`OpenWithDB` 包装的实例不关闭外部 `*sql.DB`） |
@@ -242,6 +242,7 @@ ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client) error {
 | `ormx.ErrAddressRequired` | 既未提供 `Addr`、又缺 `Host` 或 `Port` |
 | `ormx.ErrNilSQLDB` | 向 `OpenWithDB` 传入 nil `*sql.DB` |
 | `ormx.ErrNilTxFunc` | 向 `WithTx` 传入 nil 事务函数 |
+| `ormx.ErrSystemVariableNameRequired` | 系统变量名为空或纯空白 |
 
 ```go
 if _, err := ormx.Open(ctx, /* ...缺少地址... */); errors.Is(err, ormx.ErrAddressRequired) {

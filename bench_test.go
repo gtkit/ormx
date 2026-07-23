@@ -42,7 +42,9 @@ func BenchmarkWithTx(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_ = client.WithTx(ctx, nil, noop)
+		if txErr := client.WithTx(ctx, nil, noop); txErr != nil {
+			b.Fatal(txErr)
+		}
 	}
 }
 
@@ -62,6 +64,8 @@ func BenchmarkPingContext(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_ = client.PingContext(ctx)
+		if pingErr := client.PingContext(ctx); pingErr != nil {
+			b.Fatal(pingErr)
+		}
 	}
 }

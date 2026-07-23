@@ -25,7 +25,7 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 		WithSystemVariable("time_zone", "'+00:00'"),
 	)
 
-	driverCfg, err := cfg.DriverConfig()
+	driverCfg, err := cfg.MySQL.driverConfig()
 	if err != nil {
 		t.Fatalf("DriverConfig() error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestOpenWithDBUsesExternalPool(t *testing.T) {
 		t.Fatalf("expected wrapped sql.DB to be preserved")
 	}
 
-	stats := client.Stats()
+	stats := client.SQLDB().Stats()
 	if stats.MaxOpenConnections != 20 {
 		t.Fatalf("expected max open connections 20, got %d", stats.MaxOpenConnections)
 	}
@@ -134,7 +134,7 @@ func TestPoolConfigDirectFieldAssignmentApplies(t *testing.T) {
 	}
 	defer client.Close()
 
-	if got := client.Stats().MaxOpenConnections; got != 7 {
+	if got := client.SQLDB().Stats().MaxOpenConnections; got != 7 {
 		t.Fatalf("expected direct-assigned MaxOpenConns 7 to apply, got %d", got)
 	}
 }
@@ -226,9 +226,54 @@ func TestMustOpenPanicsOnInvalidConfig(t *testing.T) {
 	_ = MustOpen(context.Background(), WithHost(""), WithPort(""), WithAddress(""))
 }
 
+func TestGormConfigMapping(t *testing.T) {
+	gc := NewConfig(
+		WithPrepareStmt(true),
+		WithSkipDefaultTransaction(true),
+		WithCreateBatchSize(100),
+		WithQueryFields(true),
+		WithTranslateError(true),
+	).gormConfig()
+
+	if !gc.PrepareStmt || !gc.SkipDefaultTransaction || !gc.QueryFields || !gc.TranslateError {
+		t.Fatalf("bool fields not mapped into gorm.Config: %+v", gc)
+	}
+	if gc.CreateBatchSize != 100 {
+		t.Fatalf("CreateBatchSize not mapped, got %d", gc.CreateBatchSize)
+	}
+	if gc.Logger == nil {
+		t.Fatal("nil Logger should be defaulted to gormlogger.Discard, not passed as nil")
+	}
+}
+
+func TestDialectorConfigMapping(t *testing.T) {
+	precision := 3
+	cfg := NewConfig(
+		WithServerVersion("8.4.0"),
+		WithSkipInitializeWithVersion(true),
+		WithDefaultStringSize(191),
+		WithDisableWithReturning(true),
+	)
+	cfg.Dialect.DefaultDatetimePrecision = &precision
+
+	dc := cfg.dialectorConfig(nil, nil)
+	if dc.ServerVersion != "8.4.0" {
+		t.Fatalf("ServerVersion not mapped, got %q", dc.ServerVersion)
+	}
+	if !dc.SkipInitializeWithVersion || !dc.DisableWithReturning {
+		t.Fatalf("bool dialect fields not mapped: %+v", dc)
+	}
+	if dc.DefaultStringSize != 191 {
+		t.Fatalf("DefaultStringSize not mapped, got %d", dc.DefaultStringSize)
+	}
+	if dc.DefaultDatetimePrecision == nil || *dc.DefaultDatetimePrecision != 3 {
+		t.Fatalf("DefaultDatetimePrecision not mapped, got %v", dc.DefaultDatetimePrecision)
+	}
+}
+
 func TestEmptySystemVariableNameRejected(t *testing.T) {
 	for _, key := range []string{"", "  ", "\t"} {
-		if _, err := NewConfig(WithSystemVariable(key, "x")).DriverConfig(); !errors.Is(err, ErrSystemVariableNameRequired) {
+		if _, err := NewConfig(WithSystemVariable(key, "x")).MySQL.driverConfig(); !errors.Is(err, ErrSystemVariableNameRequired) {
 			t.Fatalf("key=%q: expected ErrSystemVariableNameRequired, got %v", key, err)
 		}
 	}

@@ -260,7 +260,7 @@ func clonePtr[T any](p *T) *T {
 // context.Background() 执行，受连接读超时（WithReadTimeout）约束而非 ctx。若需严格超时，
 // 设置合理的 ReadTimeout，或用 WithSkipInitializeWithVersion + WithServerVersion 跳过该探测。
 func (c Config) Open(ctx context.Context) (*Client, error) {
-	driverCfg, err := c.DriverConfig()
+	driverCfg, err := c.MySQL.driverConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -291,8 +291,10 @@ func (c Config) MustOpen(ctx context.Context) *Client {
 	return client
 }
 
-// OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 Config.Pool 的连接池设置应用到 sqlDB。
-// 无论成败，sqlDB 的所有权始终归调用方（Client.Close 不会关闭它）。
+// OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 Config.Pool 中已设置的连接池参数应用到 sqlDB。
+// 打开成功后 Client.Close 不会关闭该外部 *sql.DB（所有权归调用方）。
+// 但注意：若 GORM 初始化（含版本探测/自动 Ping）失败，GORM 会调用 sqlDB.Close() 进行清理，
+// 因此打开失败后不应再复用传入的 *sql.DB——这是 GORM 的行为，本库无法在不引入包装层的前提下规避。
 func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) {
 	if sqlDB == nil {
 		return nil, ErrNilSQLDB
@@ -310,16 +312,15 @@ func MustOpen(ctx context.Context, opts ...Option) *Client {
 	return NewConfig(opts...).MustOpen(ctx)
 }
 
-// OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 opts 中的连接池设置应用到 sqlDB。
-// 无论成败，sqlDB 的所有权始终归调用方（Client.Close 不会关闭它）。
+// OpenWithDB 包装既有的 *sql.DB：只把 opts 中显式传入的连接池参数应用到 sqlDB，
+// 不强加包内默认（借用的外部连接池由调用方自行配置，未显式覆盖的项保持不变）。
+// 成功打开后 Client.Close 不会关闭该外部 *sql.DB；但注意：若 GORM 初始化失败，
+// GORM 的清理逻辑可能关闭传入的 *sql.DB，失败后请勿再复用它（见 Config.OpenWithDB）。
 func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, error) {
-	return NewConfig(opts...).OpenWithDB(ctx, sqlDB)
-}
-
-// DriverConfig 根据 MySQL 连接配置生成 go-sql-driver/mysql 的 *mysqldriver.Config，
-// 配置非法（如缺少必填项或参数校验失败）时返回错误。
-func (c Config) DriverConfig() (*mysqldriver.Config, error) {
-	return c.MySQL.driverConfig()
+	// 从无连接池默认的基底出发，仅由 opts 设置池指针，避免覆盖外部 DB 的既有池配置。
+	base := DefaultConfig()
+	base.Pool = PoolConfig{}
+	return base.With(opts...).OpenWithDB(ctx, sqlDB)
 }
 
 // RedactedDSN 返回敏感值脱敏后的 DSN 字符串，可安全用于日志输出；
@@ -392,12 +393,19 @@ func (c Config) gormConfig() *gorm.Config {
 		naming.IdentifierMaxLength = defaultNamingStrategy().IdentifierMaxLength
 	}
 
+	// nil Logger 会让 GORM 恢复自己的默认日志器（stdout、不隐藏参数），
+	// 在此统一兜底为 Discard，保证"默认静默"契约不被绕过。
+	logger := c.GORM.Logger
+	if logger == nil {
+		logger = gormlogger.Discard
+	}
+
 	return &gorm.Config{
 		SkipDefaultTransaction:                   c.GORM.SkipDefaultTransaction,
 		DefaultTransactionTimeout:                c.GORM.DefaultTransactionTimeout,
 		DefaultContextTimeout:                    c.GORM.DefaultContextTimeout,
 		NamingStrategy:                           naming,
-		Logger:                                   c.GORM.Logger,
+		Logger:                                   logger,
 		NowFunc:                                  c.GORM.NowFunc,
 		DryRun:                                   c.GORM.DryRun,
 		PrepareStmt:                              c.GORM.PrepareStmt,
