@@ -44,7 +44,7 @@ db := client.DB() // *gorm.DB，直接走 GORM API
 |------|------|
 | `ormx.Open(ctx, opts...)` | 按 Option 构建配置并连接，最常用 |
 | `ormx.MustOpen(ctx, opts...)` | 同上，失败时 panic，适合启动期 wiring |
-| `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（连接池设置仍会应用）；`sqlDB` 所有权归调用方，`Close()` 不会关闭它 |
+| `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（只应用显式传入的池 Option）；打开成功后 `Close()` 不关闭外部 DB，但**初始化失败时 GORM 可能关闭该 DB，失败后勿再复用**（详见 GoDoc） |
 | `ormx.NewConfig(opts...)` / `cfg.With(opts...)` / `cfg.Open(ctx)` | 先构建 `Config` 值再打开，适合多实例复用基础配置（`Config` 是运行期配置，配置文件请由业务侧 DTO 转成 Option，详见 `Config` 的 GoDoc） |
 
 `Config` 通过 `With` / `Clone` 返回隔离副本（仅复制包内可变字段：`SystemVariables` map、连接池与方言指针），不修改原值；注入的 `GORM.Logger`、`HealthProbe`、`TxRetryObserver`、`NamingStrategy.NameReplacer` 与 `Loc` 仍为共享引用。普通赋值（`cfg2 := cfg`）是浅拷贝，需独立副本时用 `Clone`/`With`。`Config.String()`（及 `MySQLConfig.String()`）与 `%v` / `%+v` / `%#v` 输出会把密码、参数值与连接属性脱敏为 `******`，可放心打日志；`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。注意：脱敏仅覆盖 `fmt`/`Stringer` 路径，**不要把原始 `Config`/`MySQLConfig` 直接传给结构化日志器（如 `slog.Any`）或用于序列化日志**——请改用 `String()` 或 `RedactedDSN()`。
@@ -69,7 +69,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithHost(host)` | `127.0.0.1` | 主机；设置后清空 Addr |
 | `WithPort(port)` | `3306` | 端口；设置后清空 Addr |
 | `WithAddress(addr)` | 空 | 完整地址（`host:port`），优先级高于 Host/Port |
-| `WithNetwork(network)` | `tcp` | 网络类型（如 `unix`） |
+| `WithNetwork(network)` | `tcp` | 网络类型；用 `unix` 时必须配 `WithAddress("/path/mysql.sock")` 指定 socket 路径，否则 Open 返回 `ErrAddressRequired` |
 | `WithDatabase(name)` | 空 | 数据库名 |
 | `WithUser(user)` | 空 | 用户名 |
 | `WithPassword(password)` | 空 | 密码（日志输出自动脱敏） |
@@ -99,7 +99,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 |--------|--------|------|
 | `WithGormLogger(log)` | `Discard`（静默） | 设置任意 `gormlogger.Interface` 实现；默认静默，不输出任何 SQL 日志 |
 | `WithZlogger(opts...)` | 无参为 no-op（静默） | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`；不传 Option 时用 zlogger 默认（no-op logger，静默丢弃），须至少 `zlogger.WithLogger(...)` 注入 zap。详见下文 zlogger 章节 |
-| `WithPrepareStmt(enabled)` | `false` | 开启 PreparedStatement 缓存 |
+| `WithPrepareStmt(enabled)` | `false` | 开启预编译语句缓存。默认关闭；适合长生命周期单例 Client，**不要频繁 Open/Close**（GORM 的 TTL 缓存清理 goroutine 不随 `Close` 退出，`Close` 仅释放已缓存语句） |
 | `WithPrepareStmtCache(maxSize, ttl)` | GORM 默认 | 预编译语句缓存容量与 TTL，**仅在 `WithPrepareStmt(true)` 时生效**；不设置时沿用 GORM 的缓存默认 |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
 | `WithNowFunc(fn)` | `time.Now` | GORM 时间函数（测试注入用） |
@@ -294,7 +294,7 @@ client, err := ormx.Open(ctx,
 | `WithLogLevel(level)` | `gormlogger.Warn` | 日志级别（Silent / Error / Warn / Info） |
 | `WithSlowThreshold(d)` | `200ms` | 慢查询阈值；执行耗时超过即按 Warn 输出 `gorm slow query`，设为 `0` 关闭慢查询日志 |
 | `WithIgnoreRecordNotFoundError(enabled)` | `false` | 忽略 `gorm.ErrRecordNotFound`，不作为错误日志输出 |
-| `WithParameterizedQueries(enabled)` | `false`（兼容默认） | 开启后日志中的 SQL 不带参数值（脱敏），只输出占位符语句；生产环境建议设为 `true` |
+| `WithParameterizedQueries(enabled)` | `true`（安全默认） | 开启时日志中的 SQL 不带参数值（脱敏），只输出占位符语句；调试需要看真实参数值时显式传 `false` 关闭 |
 | `WithTraceIDExtractor(fn)` | 无 | 从 context 提取 trace/request id，附加为 `trace_id` 字段，串联 SQL 日志与请求链路 |
 
 ### 输出行为
@@ -307,7 +307,7 @@ client, err := ormx.Open(ctx,
 
 `LogMode` 遵循 GORM 约定返回调级别后的副本，可配合 `db.Session(&gorm.Session{Logger: ...})` 做局部调级。
 
-> 安全提示：`WithParameterizedQueries(false)` 会保留 SQL 绑定参数，可能把密码、Token 或其他敏感值写入日志，仅应在确认数据安全的受控排障环境使用。
+> 安全提示：参数化查询默认开启（隐藏绑定参数）。仅在受控排障环境显式传 `WithParameterizedQueries(false)` 打开真实参数——它会把密码、Token 等敏感值写入日志。
 
 ---
 

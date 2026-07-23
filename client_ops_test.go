@@ -64,7 +64,7 @@ func TestClientWithTxCommitAndRollback(t *testing.T) {
 	}
 }
 
-func TestClientHealthCheckAndMetrics(t *testing.T) {
+func TestClientHealthCheckAndStats(t *testing.T) {
 	sqlDB, state := newStubDB()
 	defer sqlDB.Close()
 

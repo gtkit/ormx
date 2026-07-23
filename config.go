@@ -293,8 +293,10 @@ func (c Config) MustOpen(ctx context.Context) *Client {
 
 // OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 Config.Pool 中已设置的连接池参数应用到 sqlDB。
 // 打开成功后 Client.Close 不会关闭该外部 *sql.DB（所有权归调用方）。
-// 但注意：若 GORM 初始化（含版本探测/自动 Ping）失败，GORM 会调用 sqlDB.Close() 进行清理，
+// 但注意：若 GORM 初始化（方言初始化/版本探测 SELECT VERSION()）失败，GORM 会调用 sqlDB.Close() 清理，
 // 因此打开失败后不应再复用传入的 *sql.DB——这是 GORM 的行为，本库无法在不引入包装层的前提下规避。
+// 另注意：本方法不修改 Config.MySQL，而外部 *sql.DB 的真实连接地址由调用方决定，
+// 因此返回 Client 的 Config().MySQL 未必反映其真实 DSN。
 func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) {
 	if sqlDB == nil {
 		return nil, ErrNilSQLDB
@@ -324,8 +326,8 @@ func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, er
 }
 
 // RedactedDSN 返回敏感值脱敏后的 DSN 字符串，可安全用于日志输出；
-// 底层 DriverConfig 构建失败时返回错误。为避免泄露，密码、全部连接参数（Params）值
-// 与连接属性（ConnectionAttributes）在非空时统一替换为 "******"，仅保留参数名等结构信息。
+// 底层驱动配置构建失败时返回错误。为避免泄露，密码、全部连接系统变量（SystemVariables）值
+// 与连接属性（ConnectionAttributes）在非空时统一替换为 "******"，仅保留变量名等结构信息。
 func (c Config) RedactedDSN() (string, error) {
 	driverCfg, err := c.MySQL.redacted().driverConfig()
 	if err != nil {

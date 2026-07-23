@@ -23,6 +23,11 @@ func (c MySQLConfig) address() (string, error) {
 	if c.Addr != "" {
 		return c.Addr, nil
 	}
+	// unix 网络必须用 WithAddress 指定 socket 路径；否则默认 Host/Port 会被拼成
+	// 形如 unix(127.0.0.1:3306) 的非法地址。
+	if c.Net == "unix" {
+		return "", ErrAddressRequired
+	}
 	if c.Host == "" || c.Port == "" {
 		return "", ErrAddressRequired
 	}

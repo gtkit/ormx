@@ -177,6 +177,36 @@ func TestParameterizedQueriesHideParameters(t *testing.T) {
 	}
 }
 
+func TestParameterizedQueriesDefaultHidesParameters(t *testing.T) {
+	// 不传 WithParameterizedQueries 时应默认隐藏参数（安全默认）。
+	filtering, ok := ormzap.New(ormzap.WithLogger(zap.NewNop())).(paramsFilteringLogger)
+	if !ok {
+		t.Fatalf("expected logger to implement ParamsFilter")
+	}
+
+	_, params := filtering.ParamsFilter(context.Background(), "SELECT * FROM users WHERE id = ?", 42)
+	if len(params) != 0 {
+		t.Fatalf("expected default to hide bind params, got %#v", params)
+	}
+}
+
+func TestWithSlowThresholdIgnoresNegative(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	logger := ormzap.New(
+		ormzap.WithLogger(zap.New(core)),
+		ormzap.WithLogLevel(gormlogger.Warn),
+		ormzap.WithSlowThreshold(-1), // 负值应被忽略，保留默认 200ms
+	)
+
+	// 50ms 的查询在默认 200ms 阈值下不应被判为慢查询。
+	logger.Trace(context.Background(), time.Now().Add(-50*time.Millisecond),
+		func() (string, int64) { return "SELECT 1", 1 }, nil)
+
+	if entries := logs.All(); len(entries) != 0 {
+		t.Fatalf("negative slow threshold should be ignored (keep 200ms default), got %d entries", len(entries))
+	}
+}
+
 func TestParameterizedQueriesReturnParamsWhenDisabled(t *testing.T) {
 	filtering, ok := ormzap.New(
 		ormzap.WithLogger(zap.NewNop()),

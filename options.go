@@ -134,7 +134,8 @@ func WithConnectionAttributes(attrs string) Option {
 
 // WithSystemVariable 追加一个连接系统变量：连接建立后驱动会执行 `SET key = value`，
 // 因此 value 必须是合法的 SQL 表达式（如字符串需自带引号）。它不是 DSN 内置参数——
-// charset、loc、parseTime、timeout 等由专用 Option 处理，请勿经此设置。
+// loc、parseTime、timeout 等 DSN 内置参数由专用 Option（WithLocation/WithParseTime/WithTimeout）处理，请勿经此设置；
+// charset 目前无专用 Option，如需请经驱动 mysql.Charset 或 DSN 设置。
 // SystemVariables 为 nil 时自动初始化，同名 key 会被覆盖；空 key 会在 Open 时返回错误。
 //
 // 安全边界：key/value 作为原始 SQL 直接拼接为 `SET` 语句执行，仅接受可信的静态配置；

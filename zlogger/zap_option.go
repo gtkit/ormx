@@ -22,8 +22,12 @@ func WithLogger(log *zap.Logger) Option {
 }
 
 // WithSlowThreshold 设置慢查询阈值；Trace 中执行耗时超过该阈值时按慢查询以 Warn 级别记录，设为 0 表示关闭慢查询日志。
+// 负值会被忽略并保留原值，避免把所有查询都误判为慢查询。
 func WithSlowThreshold(t time.Duration) Option {
 	return func(l *gormLogger) {
+		if t < 0 {
+			return
+		}
 		l.slowThreshold = t
 	}
 }

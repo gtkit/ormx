@@ -27,13 +27,15 @@
 - `WithLocation(nil)` 不再覆盖默认时区；且 `driverConfig` 仅在 `Loc != nil` 时赋值，直接构造 `Config`/DTO 映射遗漏时也不会把驱动默认 `time.UTC` 改成 nil，避免启用 `ParseTime` 后因 nil `time.Location` 触发 panic
 - 修复事务重试与启动 Ping 在极大 `maxRetries` 时 `maxRetries+1` 整数溢出、导致循环零次并静默跳过操作却返回 nil 的问题
 - `Client.Close` 现在先关闭 GORM 预编译语句缓存（启用 `WithPrepareStmt` 时），修复 `OpenWithDB` 场景下缓存不被释放、服务端预编译语句泄漏的问题
+- `WithNetwork("unix")` 未配 `Addr` 时不再把默认 `Host`/`Port` 拼成非法地址 `unix(127.0.0.1:3306)`，改为返回 `ErrAddressRequired`，强制用 `WithAddress` 指定 socket 路径
+- `WithSlowThreshold` 忽略负值（保留默认 200ms），修复传入负阈值会把所有查询误记为慢查询的问题
 
 ### ⚠ 破坏性变更
 
 - 移除集群读写分离能力（`Cluster` 及其全部方法、`OpenCluster` / `NewCluster` / `NewClusterWithOptions`、`ClusterOption`、`Node`、`ClusterHealthReport`、`ErrNoReadableNode` / `ErrPrimaryUnavailable` / `ErrClusterClosed`），以及写后读一致性窗口（`ContextWithWriteFlag` / `ContextWithWriteWindow` / `ContextClearWriteFlag` / `HasWriteFlag`）。需要读写分离的下游请改用 `gorm.io/plugin/dbresolver`，并复用 `Client.HealthCheck` 做探活。
 - 健康模型收敛为单机：移除 `NodeRole` / `NodeState` 类型及 `RoleStandalone` / `HealthStatusDegraded` 等枚举值；`HealthReport` 去掉 `Role`、`State` 字段（`State` 可由 `Status` 推导）；`HealthProbeFunc` 去掉 `role` 参数，签名变为 `func(ctx context.Context, client *Client) error`；连接池指标不再附带 `role` 标签。
 - `PoolConfig` 字段由值类型改为指针（`*int` / `*time.Duration`）：`nil` 表示不设置、保持 database/sql 默认，非 `nil`（含 0）表示显式应用。修复直接结构体赋值或 JSON/YAML 映射连接池参数时因内部标记未置位而静默失效的问题；`WithMaxOpenConns` 等 Option 用法不变。
-- 重命名 `WithDSNParam` / `WithDSNParams` 为 `WithSystemVariable` / `WithSystemVariables`，并将 `MySQLConfig.Params` 字段重命名为 `SystemVariables`（JSON/YAML 标签 `params` → `system_variables`）：其值写入 `mysql.Config.Params`，语义是连接后执行的系统变量 `SET key = value`（非 DSN 内置参数）。旧名称易误用于 charset 等内置参数，故正名；charset/loc/parseTime 等请用对应专用 Option。
+- 重命名 `WithDSNParam` / `WithDSNParams` 为 `WithSystemVariable` / `WithSystemVariables`，并将 `MySQLConfig.Params` 字段重命名为 `SystemVariables`（JSON/YAML 标签 `params` → `system_variables`）：其值写入 `mysql.Config.Params`，语义是连接后执行的系统变量 `SET key = value`（非 DSN 内置参数）。旧名称易误用于 charset 等内置参数，故正名；loc/parseTime/timeout 等请用对应专用 Option（charset 无专用 Option，如需经驱动 mysql.Charset 或 DSN 设置）。
 - 移除无效的 `WithDriverName` 与 `MySQLDialectConfig.DriverName`：本库始终以现成 `*sql.DB`（`Conn`）初始化 GORM，驱动仅在 `Conn == nil` 时才使用 `DriverName`，故该配置从不生效，删除不影响任何运行行为。
 - **默认日志改为静默**：未注入 Logger 时默认使用 `gormlogger.Discard`（原为 GORM 默认 Warn、输出到 stdout 且不隐藏参数）。库不再隐式输出 SQL 或泄露绑定值，日志需用 `WithZlogger`/`WithGormLogger` 显式开启。
 - 移除 `Client.Metrics()` 与 `MetricSample`：与 `StatsSnapshot()` 信息重复且无法区分 gauge/counter，改由业务监控层基于 `StatsSnapshot()` 自行对接（正确选择 gauge/counter 语义）。

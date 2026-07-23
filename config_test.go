@@ -63,14 +63,14 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 
 func TestConfigCloneIsIsolated(t *testing.T) {
 	base := DefaultConfig()
-	clone := base.With(WithSystemVariable("readPreference", "secondary"))
-	clone.MySQL.SystemVariables["readPreference"] = "primary"
+	clone := base.With(WithSystemVariable("sql_mode", "'STRICT_TRANS_TABLES'"))
+	clone.MySQL.SystemVariables["sql_mode"] = "'TRADITIONAL'"
 
-	if _, ok := base.MySQL.SystemVariables["readPreference"]; ok {
-		t.Fatalf("expected original params to stay isolated")
+	if _, ok := base.MySQL.SystemVariables["sql_mode"]; ok {
+		t.Fatalf("expected original system variables to stay isolated")
 	}
-	if got := clone.MySQL.SystemVariables["readPreference"]; got != "primary" {
-		t.Fatalf("expected clone param update to stay local, got %q", got)
+	if got := clone.MySQL.SystemVariables["sql_mode"]; got != "'TRADITIONAL'" {
+		t.Fatalf("expected clone system variable update to stay local, got %q", got)
 	}
 }
 
@@ -224,6 +224,24 @@ func TestMustOpenPanicsOnInvalidConfig(t *testing.T) {
 		}
 	}()
 	_ = MustOpen(context.Background(), WithHost(""), WithPort(""), WithAddress(""))
+}
+
+func TestOpenWithDBKeepsExternalPoolWhenNoPoolOption(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+	sqlDB.SetMaxOpenConns(7) // 调用方对外部连接池的设置
+
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	defer client.Close()
+
+	// 未传池 Option 时不应覆盖外部连接池的既有设置。
+	if got := sqlDB.Stats().MaxOpenConnections; got != 7 {
+		t.Fatalf("expected external MaxOpenConns to stay 7 without pool option, got %d", got)
+	}
 }
 
 func TestGormConfigMapping(t *testing.T) {

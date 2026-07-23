@@ -105,6 +105,21 @@ func TestMySQLConfigDriverConfigClonesParams(t *testing.T) {
 	}
 }
 
+func TestMySQLConfigUnixRequiresAddr(t *testing.T) {
+	// unix 网络未设 Addr 应报错，而不是把默认 Host/Port 拼成 unix(127.0.0.1:3306)。
+	if _, err := (MySQLConfig{Net: "unix", Host: "127.0.0.1", Port: "3306"}).driverConfig(); !errors.Is(err, ErrAddressRequired) {
+		t.Fatalf("expected ErrAddressRequired for unix without Addr, got %v", err)
+	}
+	// unix + socket 路径应正常。
+	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig()
+	if err != nil {
+		t.Fatalf("driverConfig: %v", err)
+	}
+	if cfg.Net != "unix" || cfg.Addr != "/tmp/mysql.sock" {
+		t.Fatalf("unexpected net/addr: %q/%q", cfg.Net, cfg.Addr)
+	}
+}
+
 func TestMySQLConfigDriverConfigNilLocKeepsDriverDefault(t *testing.T) {
 	// 直接构造、未设 Loc（nil）时，不应覆盖驱动默认时区。
 	cfg, err := MySQLConfig{Addr: "db:3306"}.driverConfig()

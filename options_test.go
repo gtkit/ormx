@@ -14,6 +14,18 @@ func TestDefaultLoggerIsDiscard(t *testing.T) {
 	}
 }
 
+func TestNilLoggerFallsBackToDiscard(t *testing.T) {
+	// WithGormLogger(nil) 或直接构造 nil Logger，最终映射到 GORM 时应兜底为 Discard，
+	// 不能把 nil 交给 GORM（否则 GORM 恢复自己的默认日志器）。
+	if got := NewConfig(WithGormLogger(nil)).gormConfig().Logger; got != gormlogger.Discard {
+		t.Fatalf("expected nil logger to fall back to gormlogger.Discard, got %#v", got)
+	}
+	var raw Config
+	if got := raw.gormConfig().Logger; got != gormlogger.Discard {
+		t.Fatalf("expected zero-value Config logger to fall back to gormlogger.Discard, got %#v", got)
+	}
+}
+
 func TestOptionsApply(t *testing.T) {
 	loc := time.FixedZone("test", 8*3600)
 	logger := gormlogger.Default
