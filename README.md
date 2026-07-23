@@ -81,7 +81,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithTLSConfig(name)` | 空 | TLS 配置名（需先用 `mysql.RegisterTLSConfig` 注册） |
 | `WithCollation(collation)` | 驱动默认 | 连接 collation |
 | `WithConnectionAttributes(attrs)` | 空 | 连接属性（`performance_schema.session_connect_attrs`） |
-| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式、且仅接受可信静态配置。**非** DSN 内置参数（`loc`→`WithLocation`、`parseTime`→`WithParseTime` 等；`charset` 目前无专用 Option，如需请经 DSN/驱动设置） |
+| `WithSystemVariable(key, value)` | — | 追加连接系统变量，连接后执行 `SET key = value`；value 须是合法 SQL 表达式、且仅接受可信静态配置。**非** DSN 内置参数（`loc`→`WithLocation`、`parseTime`→`WithParseTime` 等；`charset` 目前无专用 Option，如需请自行用 `mysql.Charset(...)` 构建 `*sql.DB` 再经 `OpenWithDB` 接入） |
 | `WithSystemVariables(params)` | — | 批量追加连接系统变量，语义同上 |
 
 #### 连接池
@@ -239,7 +239,7 @@ ormx.WithHealthProbe(func(ctx context.Context, c *ormx.Client) error {
 
 | 错误 | 触发场景 |
 |------|---------|
-| `ormx.ErrAddressRequired` | 既未提供 `Addr`、又缺 `Host` 或 `Port` |
+| `ormx.ErrAddressRequired` | 既未提供 `Addr`、又缺 `Host`/`Port`，或 `unix` 网络未用 `WithAddress` 指定 socket 路径 |
 | `ormx.ErrNilSQLDB` | 向 `OpenWithDB` 传入 nil `*sql.DB` |
 | `ormx.ErrNilTxFunc` | 向 `WithTx` 传入 nil 事务函数 |
 | `ormx.ErrSystemVariableNameRequired` | 系统变量名为空或纯空白 |

@@ -11,8 +11,8 @@ import (
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
-// ErrAddressRequired 表示既未提供 Addr，也未同时提供 Host 与 Port；
-// 可用 errors.Is 判定 Open 因缺少连接地址而失败。
+// ErrAddressRequired 表示缺少连接地址：既未提供 Addr、又未同时提供 Host 与 Port，
+// 或使用 unix 网络（Net=="unix"）时未用 WithAddress 指定 socket 路径。可用 errors.Is 判定。
 var ErrAddressRequired = errors.New("ormx: mysql address is required")
 
 // ErrSystemVariableNameRequired 表示系统变量名为空或纯空白字符；可用 errors.Is 判定。

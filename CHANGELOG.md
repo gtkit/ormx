@@ -4,7 +4,7 @@
 
 格式参考 Keep a Changelog。本项目为自用库，仅维护 `v1`：不发 `v2`/`major`，破坏性变更通过 MINOR 发布并以 **⚠ 破坏性变更** 标注，因此不严格承诺 SemVer 的 MAJOR 语义。
 
-## [Unreleased]
+## [v1.2.0] - 2026-07-23
 
 ### Added
 
@@ -17,7 +17,7 @@
 - `RedactedDSN`（及依赖它的 `Config.String()` / `GoString()`）现在除密码外，还会脱敏连接系统变量（SystemVariables）值与连接属性（ConnectionAttributes），避免 `session_secret` 等敏感绑定值随日志泄露
 - `MySQLConfig` 新增脱敏的 `String()` / `GoString()`：直接以 `%v` / `%+v` / `%#v` 打印 `Config.MySQL` 子结构时，密码、参数值与连接属性同样被脱敏，不再泄露明文
 - `Client.Config()` 返回的配置快照会把密码、连接参数值与连接属性统一脱敏为占位符，不再返回明文凭据或敏感绑定值；脱敏逻辑统一由 `MySQLConfig` 内部方法提供，各脱敏路径（`String`/`GoString`、`RedactedDSN`、`Client.Config`）共用同一敏感字段清单。打印路径之外的脱敏保证仅覆盖 `fmt`/`Stringer`，请勿将原始 `Config`/`MySQLConfig` 直接用于结构化日志（如 `slog.Any`）
-- `WithSystemVariable`/`WithSystemVariables` 的值作为原始 SQL 拼入 `SET` 语句，仅接受可信静态配置——不可信输入（HTTP 参数、用户配置等）存在会话级 SQL 注入风险，GoDoc/README 已明确该边界；空的系统变量名现在会在 `Open`/`DriverConfig` 时返回错误
+- `WithSystemVariable`/`WithSystemVariables` 的值作为原始 SQL 拼入 `SET` 语句，仅接受可信静态配置——不可信输入（HTTP 参数、用户配置等）存在会话级 SQL 注入风险，GoDoc/README 已明确该边界；空的系统变量名现在会在构建连接配置（`Open`/`RedactedDSN`）时返回错误
 - `WithGormLogger(nil)` 或直接构造 nil Logger 不再绕过安全默认：`gormConfig()` 会把 nil 兜底为 `gormlogger.Discard`，避免 GORM 恢复自己的默认日志器（stdout、含参数）
 - `zlogger` 参数化查询默认改为开启（原默认关闭）：注入真实 zap logger 时默认不再把绑定参数写入日志；调试需要真实参数值时用 `WithParameterizedQueries(false)` 显式关闭
 
@@ -35,7 +35,7 @@
 - 移除集群读写分离能力（`Cluster` 及其全部方法、`OpenCluster` / `NewCluster` / `NewClusterWithOptions`、`ClusterOption`、`Node`、`ClusterHealthReport`、`ErrNoReadableNode` / `ErrPrimaryUnavailable` / `ErrClusterClosed`），以及写后读一致性窗口（`ContextWithWriteFlag` / `ContextWithWriteWindow` / `ContextClearWriteFlag` / `HasWriteFlag`）。需要读写分离的下游请改用 `gorm.io/plugin/dbresolver`，并复用 `Client.HealthCheck` 做探活。
 - 健康模型收敛为单机：移除 `NodeRole` / `NodeState` 类型及 `RoleStandalone` / `HealthStatusDegraded` 等枚举值；`HealthReport` 去掉 `Role`、`State` 字段（`State` 可由 `Status` 推导）；`HealthProbeFunc` 去掉 `role` 参数，签名变为 `func(ctx context.Context, client *Client) error`；连接池指标不再附带 `role` 标签。
 - `PoolConfig` 字段由值类型改为指针（`*int` / `*time.Duration`）：`nil` 表示不设置、保持 database/sql 默认，非 `nil`（含 0）表示显式应用。修复直接结构体赋值或 JSON/YAML 映射连接池参数时因内部标记未置位而静默失效的问题；`WithMaxOpenConns` 等 Option 用法不变。
-- 重命名 `WithDSNParam` / `WithDSNParams` 为 `WithSystemVariable` / `WithSystemVariables`，并将 `MySQLConfig.Params` 字段重命名为 `SystemVariables`（JSON/YAML 标签 `params` → `system_variables`）：其值写入 `mysql.Config.Params`，语义是连接后执行的系统变量 `SET key = value`（非 DSN 内置参数）。旧名称易误用于 charset 等内置参数，故正名；loc/parseTime/timeout 等请用对应专用 Option（charset 无专用 Option，如需经驱动 mysql.Charset 或 DSN 设置）。
+- 重命名 `WithDSNParam` / `WithDSNParams` 为 `WithSystemVariable` / `WithSystemVariables`，并将 `MySQLConfig.Params` 字段重命名为 `SystemVariables`（JSON/YAML 标签 `params` → `system_variables`）：其值写入 `mysql.Config.Params`，语义是连接后执行的系统变量 `SET key = value`（非 DSN 内置参数）。旧名称易误用于 charset 等内置参数，故正名；loc/parseTime/timeout 等请用对应专用 Option（charset 无专用 Option，如需自行用 mysql.Charset 构建 *sql.DB 再经 OpenWithDB 接入）。
 - 移除无效的 `WithDriverName` 与 `MySQLDialectConfig.DriverName`：本库始终以现成 `*sql.DB`（`Conn`）初始化 GORM，驱动仅在 `Conn == nil` 时才使用 `DriverName`，故该配置从不生效，删除不影响任何运行行为。
 - **默认日志改为静默**：未注入 Logger 时默认使用 `gormlogger.Discard`（原为 GORM 默认 Warn、输出到 stdout 且不隐藏参数）。库不再隐式输出 SQL 或泄露绑定值，日志需用 `WithZlogger`/`WithGormLogger` 显式开启。
 - 移除 `Client.Metrics()` 与 `MetricSample`：与 `StatsSnapshot()` 信息重复且无法区分 gauge/counter，改由业务监控层基于 `StatsSnapshot()` 自行对接（正确选择 gauge/counter 语义）。
