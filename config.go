@@ -118,18 +118,12 @@ type GORMConfig struct {
 // MySQLDialectConfig 描述透传给 GORM MySQL 方言（gorm.io/driver/mysql）的配置，
 // 字段与其 Config 中的同名字段一一对应。
 type MySQLDialectConfig struct {
-	ServerVersion                 string
-	DefaultStringSize             uint
-	DefaultDatetimePrecision      *int
-	SkipInitializeWithVersion     bool
-	DisableWithReturning          bool
-	DisableDatetimePrecision      bool
-	DontSupportRenameIndex        bool
-	DontSupportRenameColumn       bool
-	DontSupportForShareClause     bool
-	DontSupportNullAsDefaultValue bool
-	DontSupportRenameColumnUnique bool
-	DontSupportDropConstraint     bool
+	ServerVersion             string
+	DefaultStringSize         uint
+	DefaultDatetimePrecision  *int
+	SkipInitializeWithVersion bool
+	DisableWithReturning      bool
+	DisableDatetimePrecision  bool
 }
 
 // String 返回敏感值（密码、连接参数值、连接属性）已脱敏的可读表示，
@@ -207,6 +201,9 @@ func DefaultConfig() Config {
 			ConnMaxIdleTime: new(defaultConnMaxIdleTime),
 		},
 		GORM: GORMConfig{
+			// 默认静默：库不隐式向 stdout 输出 SQL 或泄露绑定参数，
+			// 需要日志时用 WithZlogger / WithGormLogger 显式开启。
+			Logger:         gormlogger.Discard,
 			NamingStrategy: defaultNamingStrategy(),
 		},
 		StartupPing:              true,
@@ -259,6 +256,9 @@ func clonePtr[T any](p *T) *T {
 // Open 按当前配置构建 MySQL 连接器并打开 *sql.DB，应用连接池配置后初始化 GORM，
 // 返回拥有该 *sql.DB 所有权的 Client（Close 时会一并关闭）。
 // 若 StartupPing 开启，会先按重试策略 Ping 数据库；任一步骤失败时关闭已打开的连接并返回错误。
+// 注意：ctx 仅约束启动 Ping；GORM 初始化时的 SELECT VERSION() 探测由驱动以内部
+// context.Background() 执行，受连接读超时（WithReadTimeout）约束而非 ctx。若需严格超时，
+// 设置合理的 ReadTimeout，或用 WithSkipInitializeWithVersion + WithServerVersion 跳过该探测。
 func (c Config) Open(ctx context.Context) (*Client, error) {
 	driverCfg, err := c.DriverConfig()
 	if err != nil {
@@ -417,19 +417,13 @@ func (c Config) gormConfig() *gorm.Config {
 
 func (c Config) dialectorConfig(sqlDB *sql.DB, driverCfg *mysqldriver.Config) gormmysql.Config {
 	cfg := gormmysql.Config{
-		ServerVersion:                 c.Dialect.ServerVersion,
-		Conn:                          sqlDB,
-		SkipInitializeWithVersion:     c.Dialect.SkipInitializeWithVersion,
-		DefaultStringSize:             c.Dialect.DefaultStringSize,
-		DefaultDatetimePrecision:      c.Dialect.DefaultDatetimePrecision,
-		DisableWithReturning:          c.Dialect.DisableWithReturning,
-		DisableDatetimePrecision:      c.Dialect.DisableDatetimePrecision,
-		DontSupportRenameIndex:        c.Dialect.DontSupportRenameIndex,
-		DontSupportRenameColumn:       c.Dialect.DontSupportRenameColumn,
-		DontSupportForShareClause:     c.Dialect.DontSupportForShareClause,
-		DontSupportNullAsDefaultValue: c.Dialect.DontSupportNullAsDefaultValue,
-		DontSupportRenameColumnUnique: c.Dialect.DontSupportRenameColumnUnique,
-		DontSupportDropConstraint:     c.Dialect.DontSupportDropConstraint,
+		ServerVersion:             c.Dialect.ServerVersion,
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: c.Dialect.SkipInitializeWithVersion,
+		DefaultStringSize:         c.Dialect.DefaultStringSize,
+		DefaultDatetimePrecision:  c.Dialect.DefaultDatetimePrecision,
+		DisableWithReturning:      c.Dialect.DisableWithReturning,
+		DisableDatetimePrecision:  c.Dialect.DisableDatetimePrecision,
 	}
 
 	if driverCfg != nil {

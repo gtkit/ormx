@@ -105,6 +105,17 @@ func TestMySQLConfigDriverConfigClonesParams(t *testing.T) {
 	}
 }
 
+func TestMySQLConfigDriverConfigNilLocKeepsDriverDefault(t *testing.T) {
+	// 直接构造、未设 Loc（nil）时，不应覆盖驱动默认时区。
+	cfg, err := MySQLConfig{Addr: "db:3306"}.driverConfig()
+	if err != nil {
+		t.Fatalf("driverConfig: %v", err)
+	}
+	if cfg.Loc == nil {
+		t.Fatal("expected driver default Loc to be preserved, got nil")
+	}
+}
+
 func TestMySQLConfigDriverConfigKeepsCustomNet(t *testing.T) {
 	cfg, err := MySQLConfig{Net: "unix", Addr: "/tmp/mysql.sock"}.driverConfig()
 	if err != nil {

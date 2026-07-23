@@ -55,7 +55,10 @@ func (c MySQLConfig) driverConfig() (*mysqldriver.Config, error) {
 	}
 	cfg.ConnectionAttributes = c.ConnectionAttributes
 	cfg.Collation = c.Collation
-	cfg.Loc = c.Loc
+	// 仅在显式提供时覆盖，避免把驱动默认的 time.UTC 改成 nil 导致时间解析 panic。
+	if c.Loc != nil {
+		cfg.Loc = c.Loc
+	}
 	cfg.TLSConfig = c.TLSConfig
 	cfg.Timeout = c.Timeout
 	cfg.ReadTimeout = c.ReadTimeout

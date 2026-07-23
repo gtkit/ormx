@@ -3,7 +3,6 @@ package ormx
 import (
 	"context"
 	"database/sql"
-	"maps"
 	"time"
 )
 
@@ -29,13 +28,6 @@ type DBStatsSnapshot struct {
 	MaxIdleTimeClosed  int64
 	MaxLifetimeClosed  int64
 	Utilization        float64
-}
-
-// MetricSample 表示一条带标签的指标采样。
-type MetricSample struct {
-	Name   string
-	Value  float64
-	Labels map[string]string
 }
 
 // HealthProbeFunc 是自定义健康探测函数，在 Ping 成功后执行额外检查，返回非 nil 错误表示连接不健康。
@@ -101,11 +93,6 @@ func (c *Client) StatsSnapshot() DBStatsSnapshot {
 	return newDBStatsSnapshot(c.sqlDB.Stats())
 }
 
-// Metrics 返回连接池的指标采样列表，标签含客户端名称。
-func (c *Client) Metrics() []MetricSample {
-	return c.StatsSnapshot().metrics(map[string]string{"name": c.effectiveName()})
-}
-
 func (c *Client) effectiveName() string {
 	if c != nil && c.config.Name != "" {
 		return c.config.Name
@@ -131,19 +118,4 @@ func newDBStatsSnapshot(stats sql.DBStats) DBStatsSnapshot {
 	}
 
 	return snapshot
-}
-
-func (s DBStatsSnapshot) metrics(labels map[string]string) []MetricSample {
-	return []MetricSample{
-		{Name: "orm_db_max_open_connections", Value: float64(s.MaxOpenConnections), Labels: maps.Clone(labels)},
-		{Name: "orm_db_open_connections", Value: float64(s.OpenConnections), Labels: maps.Clone(labels)},
-		{Name: "orm_db_in_use_connections", Value: float64(s.InUse), Labels: maps.Clone(labels)},
-		{Name: "orm_db_idle_connections", Value: float64(s.Idle), Labels: maps.Clone(labels)},
-		{Name: "orm_db_wait_count_total", Value: float64(s.WaitCount), Labels: maps.Clone(labels)},
-		{Name: "orm_db_wait_duration_seconds_total", Value: s.WaitDuration.Seconds(), Labels: maps.Clone(labels)},
-		{Name: "orm_db_max_idle_closed_total", Value: float64(s.MaxIdleClosed), Labels: maps.Clone(labels)},
-		{Name: "orm_db_max_idle_time_closed_total", Value: float64(s.MaxIdleTimeClosed), Labels: maps.Clone(labels)},
-		{Name: "orm_db_max_lifetime_closed_total", Value: float64(s.MaxLifetimeClosed), Labels: maps.Clone(labels)},
-		{Name: "orm_db_connection_utilization", Value: s.Utilization, Labels: maps.Clone(labels)},
-	}
 }

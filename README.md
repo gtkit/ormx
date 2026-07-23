@@ -97,10 +97,10 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithGormLogger(log)` | GORM 默认 Warn | 设置任意 `gormlogger.Interface` 实现；未设置时输出错误 SQL 与超过 200ms 的慢 SQL |
-| `WithZlogger(opts...)` | 无参为 no-op（静默） | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`；不传 Option 时用 zlogger 默认（no-op logger，静默丢弃，**非** GORM 默认 Warn），须至少 `zlogger.WithLogger(...)` 注入 zap。详见下文 zlogger 章节 |
+| `WithGormLogger(log)` | `Discard`（静默） | 设置任意 `gormlogger.Interface` 实现；默认静默，不输出任何 SQL 日志 |
+| `WithZlogger(opts...)` | 无参为 no-op（静默） | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`；不传 Option 时用 zlogger 默认（no-op logger，静默丢弃），须至少 `zlogger.WithLogger(...)` 注入 zap。详见下文 zlogger 章节 |
 | `WithPrepareStmt(enabled)` | `false` | 开启 PreparedStatement 缓存 |
-| `WithPrepareStmtCache(maxSize, ttl)` | 不限制 | PreparedStatement 缓存容量与 TTL |
+| `WithPrepareStmtCache(maxSize, ttl)` | GORM 默认 | 预编译语句缓存容量与 TTL，**仅在 `WithPrepareStmt(true)` 时生效**；不设置时沿用 GORM 的缓存默认 |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
 | `WithNowFunc(fn)` | `time.Now` | GORM 时间函数（测试注入用） |
 | `WithNamingStrategy(strategy)` | `IdentifierMaxLength: 64` | 整体替换命名策略 |
@@ -115,13 +115,13 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 
 #### SQL 日志开关
 
-未传 `WithGormLogger` 时，GORM 使用默认 Warn 日志器向 stdout 输出错误 SQL 与超过 200ms 的慢 SQL，不记录正常快查询。日志通过 `gormlogger.Interface` 控制，不需要额外布尔开关：
+**默认静默**：不传 `WithGormLogger` 时，本库默认注入 `gormlogger.Discard`，不向 stdout 输出任何 SQL、也不会泄露绑定参数。日志需显式开启，通过 `gormlogger.Interface` 控制，不需要额外布尔开关：
 
 ```go
-// 完全关闭 SQL 日志
+// 默认即静默；如需显式关闭也可
 ormx.WithGormLogger(gormlogger.Discard)
 
-// 记录错误 SQL 与慢 SQL（GORM 默认行为）
+// 记录错误 SQL 与超过 200ms 的慢 SQL
 ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Warn))
 
 // 记录全部 SQL，仅建议开发环境使用
@@ -148,7 +148,7 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithServerVersion(version)` | 自动探测 | 手工指定服务端版本 |
+| `WithServerVersion(version)` | 自动探测 | 手工指定服务端版本，**仅在 `WithSkipInitializeWithVersion(true)` 时生效**；否则会被 `SELECT VERSION()` 结果覆盖。注意跳过版本探测后，GORM 不再据版本自动推导兼容标志 |
 | `WithSkipInitializeWithVersion(skip)` | `false` | 跳过按版本初始化 |
 | `WithDefaultStringSize(size)` | `0` | string 字段默认长度 |
 | `WithDisableDatetimePrecision(disable)` | `false` | 禁用 datetime 精度（兼容 MySQL 5.6 以前） |
@@ -163,9 +163,8 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 | `Config() Config` | 配置的脱敏快照（隔离副本，密码/参数值/连接属性已脱敏，不含明文凭据） |
 | `Name() string` | 实例名（未设置时为 `default`） |
 | `PingContext(ctx) error` | 连通性检查 |
-| `Stats() sql.DBStats` / `StatsSnapshot()` | 连接池统计 |
+| `Stats() sql.DBStats` / `StatsSnapshot()` | 连接池统计（`StatsSnapshot` 额外含 `Utilization`），业务层可据此自行对接监控 |
 | `HealthCheck(ctx) HealthReport` | 健康检查（Ping + 自定义探针，默认 5s 超时） |
-| `Metrics() []MetricSample` | 连接池指标采样（`orm_db_*` 系列，带 name label） |
 | `WithTx` / `WithReadTx` | 事务，见下节 |
 | `Close() error` | 关闭连接池（`OpenWithDB` 包装的实例不关闭外部 `*sql.DB`） |
 
@@ -208,9 +207,9 @@ orderRepo := repo.NewOrderRepo(orderDB.DB())
 userRepo  := repo.NewUserRepo(userDB.DB())
 ```
 
-### 健康检查与指标
+### 健康检查与连接池统计
 
-单机 Client 提供健康检查和 Prometheus 风格的指标采样：
+单机 Client 提供健康检查与连接池统计快照，指标如何暴露（gauge / counter 语义）由业务监控层决定：
 
 ```go
 report := client.HealthCheck(ctx)
@@ -218,11 +217,11 @@ if !report.Healthy() {
     log.Printf("db down: %v", report.Error)
 }
 
-for _, m := range client.Metrics() {
-    // m.Name 形如 orm_db_open_connections / orm_db_wait_count_total ...
-    // m.Labels 含 name（实例名）
-    gauge.With(m.Labels).Set(m.Value)
-}
+s := client.StatsSnapshot()
+// gauge 类（当前值）：OpenConnections / InUse / Idle / Utilization ...
+openConns.Set(float64(s.OpenConnections))
+// counter 类（累计值，用 Counter 而非 Gauge）：WaitCount / MaxIdleClosed / MaxLifetimeClosed ...
+waitCountTotal.Add(float64(s.WaitCount))
 ```
 
 `WithHealthProbe` 可在 Ping 之外追加业务探针，例如执行一次轻量查询确认连接可用：

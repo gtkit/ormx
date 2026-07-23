@@ -202,6 +202,7 @@ func WithPrepareStmt(enabled bool) Option {
 }
 
 // WithPrepareStmtCache 设置预编译语句缓存的最大条数 maxSize 与存活时间 ttl。
+// 仅在 WithPrepareStmt(true) 时生效；未设置时沿用 GORM 的缓存默认。
 func WithPrepareStmtCache(maxSize int, ttl time.Duration) Option {
 	return func(c *Config) {
 		c.GORM.PrepareStmtMaxSize = maxSize
@@ -343,6 +344,8 @@ func WithTxRetryObserver(observer TxRetryObserver) Option {
 }
 
 // WithServerVersion 手动指定 MySQL 服务端版本号，供方言据此调整行为。
+// 仅在 WithSkipInitializeWithVersion(true) 时生效——否则会被 GORM 的 SELECT VERSION() 结果覆盖；
+// 且跳过版本探测后，GORM 不再据版本自动推导兼容标志，需要时由调用方自行处理。
 func WithServerVersion(version string) Option {
 	return func(c *Config) {
 		c.Dialect.ServerVersion = version

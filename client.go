@@ -51,6 +51,13 @@ func (c *Client) Stats() sql.DBStats {
 
 // Close 关闭底层 *sql.DB。仅当 Client 拥有该连接时才真正关闭，否则直接返回 nil。
 func (c *Client) Close() error {
+	// 先释放 GORM 预编译语句缓存（启用 WithPrepareStmt 时存在）。即使不拥有 sqlDB
+	// （OpenWithDB 场景），该缓存也由本 Client 持有，必须关闭以释放服务端预编译语句。
+	if c.db != nil {
+		if psdb, ok := c.db.ConnPool.(*gorm.PreparedStmtDB); ok {
+			psdb.Close()
+		}
+	}
 	if !c.ownsSQLDB || c.sqlDB == nil {
 		return nil
 	}

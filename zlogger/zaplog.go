@@ -23,9 +23,10 @@ var nopLogger = zap.NewNop()
 // 无可用 ID 时应返回空字符串。
 type TraceIDExtractor func(ctx context.Context) string
 
-// GormLogger 是基于 zap 的 GORM 日志器，实现 gorm.io/gorm/logger 的 Interface。
-// 请通过 New 配合 Option 构造，零值不可直接使用。
-type GormLogger struct {
+// gormLogger 是基于 zap 的 GORM 日志器，实现 gorm.io/gorm/logger 的 Interface。
+// 内部类型，请通过 New 配合 Option 构造；零值可安全使用但会静默丢弃所有日志
+// （未注入 zap.Logger 时回退为 no-op）。
+type gormLogger struct {
 	zapLogger        *zap.Logger
 	sugar            *zap.SugaredLogger // cached to avoid per-call allocation
 	slowThreshold    time.Duration
@@ -36,12 +37,12 @@ type GormLogger struct {
 	parameterizedQueries      bool
 }
 
-var _ gormlogger.Interface = (*GormLogger)(nil)
+var _ gormlogger.Interface = (*gormLogger)(nil)
 
-// New 按给定 Option 构造一个 GormLogger 并以 gormlogger.Interface 返回。
+// New 按给定 Option 构造一个 gormLogger 并以 gormlogger.Interface 返回。
 // 默认使用 no-op logger、慢查询阈值 200ms、日志级别 Warn；nil Option 会被跳过。
 func New(options ...Option) gormlogger.Interface {
-	logger := &GormLogger{
+	logger := &gormLogger{
 		zapLogger:     nopLogger,
 		slowThreshold: slowTime,
 		logLevel:      gormlogger.Warn,
@@ -57,7 +58,7 @@ func New(options ...Option) gormlogger.Interface {
 }
 
 // LogMode 返回一个使用指定日志级别的副本，原 logger 不受影响。
-func (l *GormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
+func (l *gormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 	clone := *l
 	clone.logLevel = level
 	// sugar and base are inherited from the original — no re-allocation needed.
@@ -65,7 +66,7 @@ func (l *GormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 }
 
 // Info 在日志级别不低于 Info 时按 Printf 风格输出 Info 日志。
-func (l *GormLogger) Info(ctx context.Context, msg string, data ...any) {
+func (l *gormLogger) Info(ctx context.Context, msg string, data ...any) {
 	if l.logLevel < gormlogger.Info {
 		return
 	}
@@ -73,7 +74,7 @@ func (l *GormLogger) Info(ctx context.Context, msg string, data ...any) {
 }
 
 // Warn 在日志级别不低于 Warn 时按 Printf 风格输出 Warn 日志。
-func (l *GormLogger) Warn(ctx context.Context, msg string, data ...any) {
+func (l *gormLogger) Warn(ctx context.Context, msg string, data ...any) {
 	if l.logLevel < gormlogger.Warn {
 		return
 	}
@@ -81,7 +82,7 @@ func (l *GormLogger) Warn(ctx context.Context, msg string, data ...any) {
 }
 
 // Error 在日志级别不低于 Error 时按 Printf 风格输出 Error 日志。
-func (l *GormLogger) Error(ctx context.Context, msg string, data ...any) {
+func (l *gormLogger) Error(ctx context.Context, msg string, data ...any) {
 	if l.logLevel < gormlogger.Error {
 		return
 	}
@@ -92,7 +93,7 @@ func (l *GormLogger) Error(ctx context.Context, msg string, data ...any) {
 // 慢查询阈值非 0 且耗时超过阈值时输出 Warn 慢查询日志；级别为 Info 时输出普通查询日志；
 // 级别为 Silent 时不输出。日志字段包含调用位置、耗时、SQL、影响行数及可选的 trace_id。
 // 无需输出日志时不会调用 fc，避免正常快查询产生 SQL 格式化开销。
-func (l *GormLogger) Trace(
+func (l *gormLogger) Trace(
 	ctx context.Context, begin time.Time,
 	fc func() (sql string, rowsAffected int64), err error,
 ) {
@@ -121,7 +122,7 @@ func (l *GormLogger) Trace(
 
 // ParamsFilter 实现 GORM 的参数过滤钩子：启用参数化查询（WithParameterizedQueries）时
 // 返回原始 SQL 并丢弃绑定参数，使日志中不出现真实参数值；否则原样返回 SQL 与参数。
-func (l *GormLogger) ParamsFilter(_ context.Context, sql string, params ...any) (string, []any) {
+func (l *gormLogger) ParamsFilter(_ context.Context, sql string, params ...any) (string, []any) {
 	if l.parameterizedQueries {
 		return sql, nil
 	}
@@ -129,7 +130,7 @@ func (l *GormLogger) ParamsFilter(_ context.Context, sql string, params ...any) 
 }
 
 // traceFields builds the common zap fields for a Trace call.
-func (l *GormLogger) traceFields(ctx context.Context, elapsed time.Duration, sql string, rows int64) []zap.Field {
+func (l *gormLogger) traceFields(ctx context.Context, elapsed time.Duration, sql string, rows int64) []zap.Field {
 	const maxTraceFields = 6
 	fields := make([]zap.Field, 0, maxTraceFields)
 	fields = append(fields,
@@ -146,7 +147,7 @@ func (l *GormLogger) traceFields(ctx context.Context, elapsed time.Duration, sql
 	return fields
 }
 
-func (l *GormLogger) base() *zap.Logger {
+func (l *gormLogger) base() *zap.Logger {
 	if l == nil || l.zapLogger == nil {
 		return nopLogger
 	}
@@ -154,7 +155,7 @@ func (l *GormLogger) base() *zap.Logger {
 }
 
 // getSugar returns the cached sugared logger, enriched with the trace ID from ctx if available.
-func (l *GormLogger) getSugar(ctx context.Context) *zap.SugaredLogger {
+func (l *gormLogger) getSugar(ctx context.Context) *zap.SugaredLogger {
 	if traceID := l.extractTraceID(ctx); traceID != "" {
 		return l.base().With(zap.String("trace_id", traceID)).Sugar()
 	}
@@ -164,7 +165,7 @@ func (l *GormLogger) getSugar(ctx context.Context) *zap.SugaredLogger {
 	return l.base().Sugar()
 }
 
-func (l *GormLogger) extractTraceID(ctx context.Context) string {
+func (l *gormLogger) extractTraceID(ctx context.Context) string {
 	if l.traceIDExtractor == nil || ctx == nil {
 		return ""
 	}

@@ -8,6 +8,12 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+func TestDefaultLoggerIsDiscard(t *testing.T) {
+	if got := NewConfig().GORM.Logger; got != gormlogger.Discard {
+		t.Fatalf("expected default GORM logger to be gormlogger.Discard, got %#v", got)
+	}
+}
+
 func TestOptionsApply(t *testing.T) {
 	loc := time.FixedZone("test", 8*3600)
 	logger := gormlogger.Default

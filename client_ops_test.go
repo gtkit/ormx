@@ -97,17 +97,6 @@ func TestClientHealthCheckAndMetrics(t *testing.T) {
 	if report.Stats.MaxOpenConnections != 20 {
 		t.Fatalf("expected max open connections 20, got %d", report.Stats.MaxOpenConnections)
 	}
-
-	metrics := client.Metrics()
-	if len(metrics) != 10 {
-		t.Fatalf("expected 10 metric samples, got %d", len(metrics))
-	}
-	if metrics[0].Labels["name"] != "orders-db" {
-		t.Fatalf("expected metric label name orders-db, got %q", metrics[0].Labels["name"])
-	}
-	if _, ok := metrics[0].Labels["role"]; ok {
-		t.Fatalf("expected no role label in single-node metrics, got %q", metrics[0].Labels["role"])
-	}
 }
 
 func TestClientHealthCheckDown(t *testing.T) {
@@ -460,13 +449,11 @@ func TestDBStatsSnapshotUtilization(t *testing.T) {
 	snapshot := DBStatsSnapshot{
 		MaxOpenConnections: 10,
 		InUse:              4,
-		WaitDuration:       time.Second,
 	}
 	snapshot.Utilization = float64(snapshot.InUse) / float64(snapshot.MaxOpenConnections)
 
-	metrics := snapshot.metrics(map[string]string{"name": "orders"})
-	if metrics[9].Value != 0.4 {
-		t.Fatalf("expected utilization 0.4, got %v", metrics[9].Value)
+	if snapshot.Utilization != 0.4 {
+		t.Fatalf("expected utilization 0.4, got %v", snapshot.Utilization)
 	}
 }
 
@@ -621,6 +608,20 @@ func TestWithTxNonDeadlockCommitErrorNoRetry(t *testing.T) {
 	}
 	if got := state.beginCount.Load(); got != 1 {
 		t.Fatalf("expected exactly one attempt for non-deadlock error, got %d", got)
+	}
+}
+
+func TestClientClosePreparedStmtCache(t *testing.T) {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithPrepareStmt(true), WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		t.Fatalf("OpenWithDB() error = %v", err)
+	}
+	// OpenWithDB 不拥有 sqlDB，但仍应关闭 GORM 预编译语句缓存且不报错。
+	if closeErr := client.Close(); closeErr != nil {
+		t.Fatalf("Close() error = %v", closeErr)
 	}
 }
 

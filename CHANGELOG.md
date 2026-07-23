@@ -22,8 +22,9 @@
 ### Fixed
 
 - `Config.Clone()`（及 `Client.Config()`）现在深拷贝连接池指针与 `Dialect.DefaultDatetimePrecision`，修复改动副本会污染原配置的问题
-- `WithLocation(nil)` 不再覆盖默认时区，避免启用 `ParseTime` 后因 nil `time.Location` 触发 panic
+- `WithLocation(nil)` 不再覆盖默认时区；且 `driverConfig` 仅在 `Loc != nil` 时赋值，直接构造 `Config`/DTO 映射遗漏时也不会把驱动默认 `time.UTC` 改成 nil，避免启用 `ParseTime` 后因 nil `time.Location` 触发 panic
 - 修复事务重试与启动 Ping 在极大 `maxRetries` 时 `maxRetries+1` 整数溢出、导致循环零次并静默跳过操作却返回 nil 的问题
+- `Client.Close` 现在先关闭 GORM 预编译语句缓存（启用 `WithPrepareStmt` 时），修复 `OpenWithDB` 场景下缓存不被释放、服务端预编译语句泄漏的问题
 
 ### ⚠ 破坏性变更
 
@@ -32,10 +33,14 @@
 - `PoolConfig` 字段由值类型改为指针（`*int` / `*time.Duration`）：`nil` 表示不设置、保持 database/sql 默认，非 `nil`（含 0）表示显式应用。修复直接结构体赋值或 JSON/YAML 映射连接池参数时因内部标记未置位而静默失效的问题；`WithMaxOpenConns` 等 Option 用法不变。
 - 重命名 `WithDSNParam` / `WithDSNParams` 为 `WithSystemVariable` / `WithSystemVariables`，并将 `MySQLConfig.Params` 字段重命名为 `SystemVariables`（JSON/YAML 标签 `params` → `system_variables`）：其值写入 `mysql.Config.Params`，语义是连接后执行的系统变量 `SET key = value`（非 DSN 内置参数）。旧名称易误用于 charset 等内置参数，故正名；charset/loc/parseTime 等请用对应专用 Option。
 - 移除无效的 `WithDriverName` 与 `MySQLDialectConfig.DriverName`：本库始终以现成 `*sql.DB`（`Conn`）初始化 GORM，驱动仅在 `Conn == nil` 时才使用 `DriverName`，故该配置从不生效，删除不影响任何运行行为。
+- **默认日志改为静默**：未注入 Logger 时默认使用 `gormlogger.Discard`（原为 GORM 默认 Warn、输出到 stdout 且不隐藏参数）。库不再隐式输出 SQL 或泄露绑定值，日志需用 `WithZlogger`/`WithGormLogger` 显式开启。
+- 移除 `Client.Metrics()` 与 `MetricSample`：与 `StatsSnapshot()` 信息重复且无法区分 gauge/counter，改由业务监控层基于 `StatsSnapshot()` 自行对接（正确选择 gauge/counter 语义）。
+- 移除 `MySQLDialectConfig` 中仅用于旧版 MySQL/MariaDB 兼容、且无 Option/无测试的 `DontSupport*` 字段（6 个）：本库目标为 MySQL 8，GORM 会在初始化时按版本自动推导这些标志。
+- `zlogger.GormLogger` 类型改为非导出：其字段全私有、`New` 返回 `gormlogger.Interface`，导出具体类型无实际用途。
 
 ### Removed
 
-- 删除集群相关源码与测试，主包回归单机连接、事务与健康/可观测能力；`Client.HealthCheck` / `StatsSnapshot` / `Metrics` / `Name` 与 `WithHealthProbe` 仍提供，但相关类型、字段与签名有调整（见上文「破坏性变更」）
+- 删除集群相关源码与测试，主包回归单机连接、事务与健康/可观测能力；`Client.HealthCheck` / `StatsSnapshot` / `Name` 与 `WithHealthProbe` 仍提供，但相关类型、字段与签名有调整（见上文「破坏性变更」）
 
 ### Changed
 
