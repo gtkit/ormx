@@ -42,7 +42,7 @@ func TestMySQLConfigDriverConfig(t *testing.T) {
 		Host:                 "127.0.0.1",
 		Port:                 "3306",
 		Database:             "app",
-		Params:               map[string]string{"charset": "utf8mb4"},
+		SystemVariables:      map[string]string{"time_zone": "'+00:00'"},
 		ConnectionAttributes: "program_name:demo",
 		Collation:            "utf8mb4_general_ci",
 		Loc:                  loc,
@@ -69,7 +69,7 @@ func TestMySQLConfigDriverConfig(t *testing.T) {
 	if cfg.DBName != "app" {
 		t.Fatalf("unexpected dbname %q", cfg.DBName)
 	}
-	if cfg.Params["charset"] != "utf8mb4" {
+	if cfg.Params["time_zone"] != "'+00:00'" {
 		t.Fatalf("unexpected params %v", cfg.Params)
 	}
 	if cfg.ConnectionAttributes != "program_name:demo" {
@@ -93,14 +93,14 @@ func TestMySQLConfigDriverConfig(t *testing.T) {
 }
 
 func TestMySQLConfigDriverConfigClonesParams(t *testing.T) {
-	src := map[string]string{"charset": "utf8mb4"}
-	cfg, err := MySQLConfig{Addr: "db:3306", Params: src}.driverConfig()
+	src := map[string]string{"time_zone": "'+00:00'"}
+	cfg, err := MySQLConfig{Addr: "db:3306", SystemVariables: src}.driverConfig()
 	if err != nil {
 		t.Fatalf("driverConfig: %v", err)
 	}
 
-	src["charset"] = "latin1"
-	if cfg.Params["charset"] != "utf8mb4" {
+	src["time_zone"] = "'+08:00'"
+	if cfg.Params["time_zone"] != "'+00:00'" {
 		t.Fatalf("expected params to be cloned, got %v", cfg.Params)
 	}
 }

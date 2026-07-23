@@ -172,7 +172,10 @@ func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *go
 	}()
 
 	if err = fn(tx); err != nil {
-		return errors.Join(err, rollbackError(tx))
+		if rbErr := rollbackError(tx); rbErr != nil {
+			return errors.Join(err, fmt.Errorf("ormx: rollback tx: %w", rbErr))
+		}
+		return err
 	}
 
 	if err = tx.Commit().Error; err != nil {

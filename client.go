@@ -9,7 +9,8 @@ import (
 )
 
 // Client 封装单个数据库连接，持有 GORM 实例与底层 *sql.DB。
-// Client 并发安全，可在多个 goroutine 间共享。
+// Client 自身状态只读，可在多个 goroutine 间并发使用；但调用方注入的
+// Logger、HealthProbe、TxRetryObserver 会在并发下被调用，其并发安全由调用方保证。
 type Client struct {
 	db        *gorm.DB
 	sqlDB     *sql.DB
@@ -53,5 +54,8 @@ func (c *Client) Close() error {
 	if !c.ownsSQLDB || c.sqlDB == nil {
 		return nil
 	}
-	return c.sqlDB.Close()
+	if err := c.sqlDB.Close(); err != nil {
+		return fmt.Errorf("ormx: close sql db: %w", err)
+	}
+	return nil
 }

@@ -37,3 +37,22 @@ func TestIntegrationOpenAndQueryRealMySQL(t *testing.T) {
 		t.Fatalf("expected widget alpha, got %q", got.Name)
 	}
 }
+
+func TestIntegrationSystemVariableTakesEffect(t *testing.T) {
+	h := newIntegrationMySQLHarness(t)
+	cfg := h.newConfig(t, "sysvar").With(WithSystemVariable("time_zone", "'+00:00'"))
+	client, err := cfg.Open(context.Background())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	var tz string
+	if queryErr := client.DB().WithContext(context.Background()).
+		Raw("SELECT @@session.time_zone").Scan(&tz).Error; queryErr != nil {
+		t.Fatalf("query @@session.time_zone: %v", queryErr)
+	}
+	if tz != "+00:00" {
+		t.Fatalf("expected session time_zone +00:00, got %q", tz)
+	}
+}

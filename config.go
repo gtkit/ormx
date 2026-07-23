@@ -37,8 +37,8 @@ var ErrNilSQLDB = errors.New("ormx: nil *sql.DB")
 
 // Config 汇总建立 MySQL 连接所需的全部配置：驱动连接参数（MySQL）、
 // 连接池（Pool）、GORM 行为（GORM）、方言（Dialect）以及启动期 Ping 重试策略。
-// Config 通过 With / Clone 返回隔离的深拷贝副本，不修改原值。注意普通赋值（cfg2 := cfg）
-// 只是浅拷贝，仍与原值共享 Params map 与连接池等指针字段；需要独立副本时用 Clone 或 With。
+// Config 通过 With / Clone 返回隔离副本（仅复制包内可变字段），不修改原值。注意普通赋值（cfg2 := cfg）
+// 只是浅拷贝，仍与原值共享 SystemVariables map 与连接池等指针字段；需要独立副本时用 Clone 或 With。
 // 字段全部导出以便从配置文件直接映射，但直接修改字段会绕过 Option 的防御逻辑，
 // 合法性由调用方自行保证；优先使用 Option 构建配置。
 // 注意：零值 Config 不携带任何默认值——建议以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段，
@@ -68,7 +68,7 @@ type MySQLConfig struct {
 	Port                 string            `json:"port"     yaml:"port"`
 	Addr                 string            `json:"addr"     yaml:"addr"`
 	Database             string            `json:"database" yaml:"database"`
-	Params               map[string]string `json:"params"   yaml:"params"`
+	SystemVariables      map[string]string `json:"system_variables" yaml:"system_variables"`
 	ConnectionAttributes string            `json:"connection_attributes" yaml:"connection_attributes"`
 	Collation            string            `json:"collation" yaml:"collation"`
 	Loc                  *time.Location    `json:"-"        yaml:"-"`
@@ -131,8 +131,8 @@ type MySQLDialectConfig struct {
 	DontSupportDropConstraint     bool
 }
 
-// String 返回密码已脱敏的可读表示，
-// 防止经 fmt.Print / 日志输出意外泄露凭据。
+// String 返回敏感值（密码、连接参数值、连接属性）已脱敏的可读表示，
+// 底层复用 RedactedDSN，防止经 fmt.Print / 日志输出意外泄露。
 func (c Config) String() string {
 	dsn, err := c.RedactedDSN()
 	if err != nil {
@@ -160,10 +160,10 @@ func (c MySQLConfig) redacted() MySQLConfig {
 	if c.Password != "" {
 		c.Password = redactedMask
 	}
-	if len(c.Params) > 0 {
-		c.Params = maps.Clone(c.Params)
-		for key := range c.Params {
-			c.Params[key] = redactedMask
+	if len(c.SystemVariables) > 0 {
+		c.SystemVariables = maps.Clone(c.SystemVariables)
+		for key := range c.SystemVariables {
+			c.SystemVariables[key] = redactedMask
 		}
 	}
 	if c.ConnectionAttributes != "" {
@@ -232,11 +232,13 @@ func (c Config) With(opts ...Option) Config {
 	return clone
 }
 
-// Clone 返回 Config 的深拷贝：复制 MySQL.Params 映射，以及连接池与方言中的可选指针字段，
-// 避免副本与原值共享同一底层 map 或指针。
+// Clone 隔离复制包内可变的配置字段：MySQL.Params 映射、连接池与方言中的可选指针字段，
+// 使副本与原值互不影响。注意它不深拷贝调用方注入的引用型字段——
+// GORM.Logger、HealthProbe、TxRetryObserver、NamingStrategy.NameReplacer 以及
+// MySQL.Loc（*time.Location，按不可变共享）仍与原值共享同一实例。
 func (c Config) Clone() Config {
 	clone := c
-	clone.MySQL.Params = maps.Clone(c.MySQL.Params)
+	clone.MySQL.SystemVariables = maps.Clone(c.MySQL.SystemVariables)
 	clone.Pool.MaxOpenConns = clonePtr(c.Pool.MaxOpenConns)
 	clone.Pool.MaxIdleConns = clonePtr(c.Pool.MaxIdleConns)
 	clone.Pool.ConnMaxLifetime = clonePtr(c.Pool.ConnMaxLifetime)
@@ -250,8 +252,7 @@ func clonePtr[T any](p *T) *T {
 	if p == nil {
 		return nil
 	}
-	v := *p
-	return &v
+	return new(*p)
 }
 
 // Open 按当前配置构建 MySQL 连接器并打开 *sql.DB，应用连接池配置后初始化 GORM，

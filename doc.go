@@ -22,6 +22,7 @@
 //
 // 连接健康检查与连接池指标见 [Client.HealthCheck]、[Client.StatsSnapshot] 与 [Client.Metrics]。
 //
-// [Client] 并发安全，可在多个 goroutine 间共享。
+// [Client] 可在多个 goroutine 间并发使用；调用方注入的 logger、HealthProbe、
+// TxRetryObserver 的并发安全由调用方保证。
 // GORM 的 zap 日志适配见子包 zlogger。
 package ormx

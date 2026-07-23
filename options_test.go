@@ -26,8 +26,8 @@ func TestOptionsApply(t *testing.T) {
 		{"WithTLSConfig", WithTLSConfig("custom"), func(c Config) any { return c.MySQL.TLSConfig }, "custom"},
 		{"WithCollation", WithCollation("utf8mb4_general_ci"), func(c Config) any { return c.MySQL.Collation }, "utf8mb4_general_ci"},
 		{"WithConnectionAttributes", WithConnectionAttributes("program_name:demo"), func(c Config) any { return c.MySQL.ConnectionAttributes }, "program_name:demo"},
-		{"WithSystemVariables", WithSystemVariables(map[string]string{"time_zone": "'+00:00'"}), func(c Config) any { return c.MySQL.Params["time_zone"] }, "'+00:00'"},
-		{"WithSystemVariables 空 map 不生效", WithSystemVariables(nil), func(c Config) any { return c.MySQL.Params == nil }, true},
+		{"WithSystemVariables", WithSystemVariables(map[string]string{"time_zone": "'+00:00'"}), func(c Config) any { return c.MySQL.SystemVariables["time_zone"] }, "'+00:00'"},
+		{"WithSystemVariables 空 map 不生效", WithSystemVariables(nil), func(c Config) any { return c.MySQL.SystemVariables == nil }, true},
 		{"WithPrepareStmt", WithPrepareStmt(true), func(c Config) any { return c.GORM.PrepareStmt }, true},
 		{"WithPrepareStmtCache", WithPrepareStmtCache(64, time.Minute), func(c Config) any {
 			return [2]any{c.GORM.PrepareStmtMaxSize, c.GORM.PrepareStmtTTL}

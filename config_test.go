@@ -22,7 +22,7 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 		WithTimeout(15*time.Second),
 		WithReadTimeout(3*time.Second),
 		WithWriteTimeout(4*time.Second),
-		WithSystemVariable("loc", "ignored-by-driver-config"),
+		WithSystemVariable("time_zone", "'+00:00'"),
 	)
 
 	driverCfg, err := cfg.DriverConfig()
@@ -64,12 +64,12 @@ func TestDriverConfigAndRedactedDSN(t *testing.T) {
 func TestConfigCloneIsIsolated(t *testing.T) {
 	base := DefaultConfig()
 	clone := base.With(WithSystemVariable("readPreference", "secondary"))
-	clone.MySQL.Params["readPreference"] = "primary"
+	clone.MySQL.SystemVariables["readPreference"] = "primary"
 
-	if _, ok := base.MySQL.Params["readPreference"]; ok {
+	if _, ok := base.MySQL.SystemVariables["readPreference"]; ok {
 		t.Fatalf("expected original params to stay isolated")
 	}
-	if got := clone.MySQL.Params["readPreference"]; got != "primary" {
+	if got := clone.MySQL.SystemVariables["readPreference"]; got != "primary" {
 		t.Fatalf("expected clone param update to stay local, got %q", got)
 	}
 }
@@ -198,8 +198,8 @@ func TestMySQLConfigStringRedactsSecrets(t *testing.T) {
 		}
 	}
 	// 脱敏在副本上进行，不得污染原始 Params。
-	if cfg.MySQL.Params["session_secret"] != "param-secret" {
-		t.Fatalf("printing mutated original Params: %v", cfg.MySQL.Params)
+	if cfg.MySQL.SystemVariables["session_secret"] != "param-secret" {
+		t.Fatalf("printing mutated original Params: %v", cfg.MySQL.SystemVariables)
 	}
 }
 
@@ -224,6 +224,12 @@ func TestMustOpenPanicsOnInvalidConfig(t *testing.T) {
 		}
 	}()
 	_ = MustOpen(context.Background(), WithHost(""), WithPort(""), WithAddress(""))
+}
+
+func TestEmptySystemVariableNameRejected(t *testing.T) {
+	if _, err := NewConfig(WithSystemVariable("", "x")).DriverConfig(); err == nil {
+		t.Fatal("expected error for empty system variable name")
+	}
 }
 
 func TestWithLocationNilKeepsDefault(t *testing.T) {

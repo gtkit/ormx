@@ -48,7 +48,7 @@ db := client.DB() // *gorm.DB，直接走 GORM API
 | `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（连接池设置仍会应用）；`sqlDB` 所有权归调用方，`Close()` 不会关闭它 |
 | `ormx.NewConfig(opts...)` / `cfg.With(opts...)` / `cfg.Open(ctx)` | 先构建 `Config` 值再打开，适合从配置文件映射、多实例复用基础配置 |
 
-`Config` 通过 `With` / `Clone` 返回隔离的深拷贝，不修改原值；普通赋值（`cfg2 := cfg`）为浅拷贝，仍共享 `Params` map 与连接池等指针字段，需独立副本时用 `Clone`/`With`。`Config.String()`（及 `MySQLConfig.String()`）与 `%v` / `%+v` / `%#v` 输出会把密码、参数值与连接属性脱敏为 `******`，可放心打日志；`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。注意：脱敏仅覆盖 `fmt`/`Stringer` 路径，**不要把原始 `Config`/`MySQLConfig` 直接传给结构化日志器（如 `slog.Any`）或用于序列化日志**——请改用 `String()` 或 `RedactedDSN()`。
+`Config` 通过 `With` / `Clone` 返回隔离副本（仅复制包内可变字段：`SystemVariables` map、连接池与方言指针），不修改原值；注入的 `GORM.Logger`、`HealthProbe`、`TxRetryObserver`、`NamingStrategy.NameReplacer` 与 `Loc` 仍为共享引用。普通赋值（`cfg2 := cfg`）是浅拷贝，需独立副本时用 `Clone`/`With`。`Config.String()`（及 `MySQLConfig.String()`）与 `%v` / `%+v` / `%#v` 输出会把密码、参数值与连接属性脱敏为 `******`，可放心打日志；`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。注意：脱敏仅覆盖 `fmt`/`Stringer` 路径，**不要把原始 `Config`/`MySQLConfig` 直接传给结构化日志器（如 `slog.Any`）或用于序列化日志**——请改用 `String()` 或 `RedactedDSN()`。
 
 ```go
 base := ormx.NewConfig(
@@ -162,7 +162,7 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 |------|------|
 | `DB() *gorm.DB` | 取 GORM 句柄 |
 | `SQLDB() *sql.DB` | 取底层 `*sql.DB`（可交给 [jetx](https://github.com/gtkit/jetx) 等共享连接池） |
-| `Config() Config` | 配置快照（深拷贝） |
+| `Config() Config` | 配置的脱敏快照（隔离副本，密码/参数值/连接属性已脱敏，不含明文凭据） |
 | `Name() string` | 实例名（未设置时为 `default`） |
 | `PingContext(ctx) error` | 连通性检查 |
 | `Stats() sql.DBStats` / `StatsSnapshot()` | 连接池统计 |

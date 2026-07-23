@@ -17,8 +17,8 @@ const (
 
 // isDeadlock 判断错误是否属于 MySQL 死锁（1213）或锁等待超时（1205）。
 func isDeadlock(err error) bool {
-	var mysqlErr *mysqldriver.MySQLError
-	if !errors.As(err, &mysqlErr) {
+	mysqlErr, ok := errors.AsType[*mysqldriver.MySQLError](err)
+	if !ok {
 		return false
 	}
 	return mysqlErr.Number == mysqlErrDeadlock || mysqlErr.Number == mysqlErrLockWait

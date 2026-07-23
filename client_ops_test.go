@@ -485,7 +485,7 @@ func TestClientConfigRedactsPasswordAndReturnsCopy(t *testing.T) {
 	if got.MySQL.Password == "pw-secret" {
 		t.Fatal("Config() leaked plaintext password")
 	}
-	if got.MySQL.Params["session_secret"] == "param-secret" {
+	if got.MySQL.SystemVariables["session_secret"] == "param-secret" {
 		t.Fatal("Config() leaked plaintext param value")
 	}
 	if got.MySQL.ConnectionAttributes == "attribute-secret" {

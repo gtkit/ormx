@@ -43,7 +43,12 @@ func (c MySQLConfig) driverConfig() (*mysqldriver.Config, error) {
 	cfg.Net = network
 	cfg.Addr = addr
 	cfg.DBName = c.Database
-	cfg.Params = maps.Clone(c.Params)
+	cfg.Params = maps.Clone(c.SystemVariables)
+	for key := range cfg.Params {
+		if key == "" {
+			return nil, errors.New("ormx: system variable name must not be empty")
+		}
+	}
 	cfg.ConnectionAttributes = c.ConnectionAttributes
 	cfg.Collation = c.Collation
 	cfg.Loc = c.Loc
