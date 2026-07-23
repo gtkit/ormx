@@ -1,4 +1,4 @@
 package ormx
 
 // Version 是 ormx 当前发布的版本号。
-const Version = "v1.1.3"
+const Version = "v1.2.0"
