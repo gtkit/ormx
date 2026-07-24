@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 func TestMySQLConfigAddress(t *testing.T) {
@@ -340,6 +342,38 @@ func TestWithDSNEndpointOverrideResetsDerivedTLS(t *testing.T) {
 	}
 	if dc.TLSConfig != "true" {
 		t.Fatalf("expected tls config name preserved, got %q", dc.TLSConfig)
+	}
+
+	// 端到端：最终 DSN 交回驱动标准化后，证书 ServerName 必须是新主机名。
+	reparsed, err := mysqldriver.ParseDSN(dc.FormatDSN())
+	if err != nil {
+		t.Fatalf("ParseDSN(final dsn): %v", err)
+	}
+	if reparsed.TLS == nil || reparsed.TLS.ServerName != "new-db" {
+		t.Fatalf("expected TLS ServerName new-db after driver normalize, got %+v", reparsed.TLS)
+	}
+}
+
+func TestIsTCPNetwork(t *testing.T) {
+	tests := []struct {
+		network string
+		want    bool
+	}{
+		{"tcp", true},
+		{"tcp4", true},
+		{"tcp6", true},
+		{"unix", false},
+		{"", false},
+		{"tcpx", false},       // 前缀相同的自定义网络名不得误判
+		{"tcp-custom", false}, // 同上
+	}
+
+	for _, tt := range tests {
+		t.Run("net="+tt.network, func(t *testing.T) {
+			if got := isTCPNetwork(tt.network); got != tt.want {
+				t.Fatalf("isTCPNetwork(%q) = %v, want %v", tt.network, got, tt.want)
+			}
+		})
 	}
 }
 

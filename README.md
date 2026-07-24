@@ -68,7 +68,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | Option | 默认值 | 说明 |
 |--------|--------|------|
 | `WithName(name)` | `"default"` | 实例名，用于 `Client.Name`、健康报告与事务重试事件；多实例时建议显式设置 |
-| `WithDSN(dsn)` | — | 以完整 DSN（如 `user:pass@tcp(host:3306)/db?parseTime=true`）**整体替换** MySQL 连接子配置：DSN 未写的参数按驱动默认（parseTime=false、时区 UTC、无超时），不叠加本包默认；本库未单独建模的驱动参数（`multiStatements`、`maxAllowedPacket`、charset 回退列表等）原样透传给驱动，不丢失。建议放在其它连接 Option 之前，之后的 Option 仍可覆盖单个字段（含 `WithHost`/`WithPort`） |
+| `WithDSN(dsn)` | — | 以完整 DSN（如 `user:pass@tcp(host:3306)/db?parseTime=true`）**整体替换** MySQL 连接子配置：DSN 未写的参数按驱动默认（parseTime=false、时区 UTC、无超时），不叠加本包默认；本库未单独建模的驱动参数（`multiStatements`、`maxAllowedPacket`、charset 回退列表等）原样透传给驱动，不丢失。建议放在其它连接 Option 之前，之后的 Option 仍可覆盖单个字段（含 `WithHost`/`WithPort`）。DSN 仅应来自可信静态配置，不得直接接收用户输入，也不要记录含凭据的原始 DSN（日志用 `RedactedDSN`）——透传的参数中可能包含影响安全边界的驱动开关 |
 | `WithHost(host)` | `127.0.0.1` | 主机；设置后清空 Addr |
 | `WithPort(port)` | `3306` | 端口；设置后清空 Addr |
 | `WithAddress(addr)` | 空 | 完整地址（`host:port`），优先级高于 Host/Port |
@@ -81,7 +81,7 @@ users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Ope
 | `WithTimeout(d)` | `10s` | 建连超时 |
 | `WithReadTimeout(d)` | `30s` | I/O 读超时 |
 | `WithWriteTimeout(d)` | `30s` | I/O 写超时 |
-| `WithTLSConfig(name)` | 空 | TLS 配置名（需先用 `mysql.RegisterTLSConfig` 注册） |
+| `WithTLSConfig(name)` | 空 | TLS 配置名：支持驱动内置值 `true` / `false` / `skip-verify` / `preferred`（无需注册），或经 `mysql.RegisterTLSConfig` 注册的名称。生产环境推荐 `true` 或启用证书验证的自定义配置；`preferred` 可能回退明文连接、`skip-verify` 不验证服务端证书，仅适合受控环境 |
 | `WithCharset(charset)` | 驱动默认（utf8mb4） | 显式指定连接字符集，连接后执行 `SET NAMES <charset>`；配 `WithCollation` 时执行 `SET NAMES <charset> COLLATE <collation>`。驱动默认已是 utf8mb4，非必选项；标识符仅允许字母/数字/下划线，仅支持单一字符集（回退列表返回 `ErrDSNUnsupported`，需要时经 `WithDSN` 的 `charset=` 参数设置） |
 | `WithCollation(collation)` | 驱动默认 | 连接 collation |
 | `WithConnectionAttributes(attrs)` | 空 | 连接属性（`performance_schema.session_connect_attrs`） |

@@ -8,11 +8,6 @@
 
 ### Added
 
-- 新增 `WithCharset` Option，一行显式设置连接字符集：连接后执行 `SET NAMES <charset>`，配 `WithCollation` 时执行 `SET NAMES <charset> COLLATE <collation>`；不再需要自建 `*sql.DB` 绕行。标识符仅允许字母/数字/下划线；仅支持单一字符集，回退列表（`utf8mb4,utf8`）返回新哨兵错误 `ErrDSNUnsupported`（可用 `errors.Is` 判定），回退列表需要时经 `WithDSN` 的 `charset=` 参数设置
-- 新增 `WithDSN` Option，直接以完整 MySQL DSN 初始化连接配置（整体替换 MySQL 子配置，DSN 未写的参数按驱动默认）：本库未单独建模的驱动参数（`multiStatements`、`maxAllowedPacket`、charset 回退列表等）原样透传给驱动、不丢失；后续 Option 仍可覆盖单个字段（含 `WithHost`/`WithPort`）；驱动对已移除参数（如 `strict`）的 panic 被转换为 `ErrDSNUnsupported` 错误
-- 新增 `Client.Transaction(ctx, fn, txOpts...)` 事务便捷入口，等价 `WithTx(ctx, nil, fn, txOpts...)`，最常见调用不再写 `nil` 占位参数
-- 新增 `WithZapLogger` Option，直传 `*zap.Logger` 一步接入 SQL 日志，等价 `WithZlogger(zlogger.WithLogger(zlog), opts...)`
-
 ### Changed
 
 ### Deprecated
@@ -22,6 +17,15 @@
 ### Fixed
 
 ### Security
+
+## [v1.3.0] - 2026-07-24
+
+### Added
+
+- 新增 `WithCharset` Option，一行显式设置连接字符集：连接后执行 `SET NAMES <charset>`，配 `WithCollation` 时执行 `SET NAMES <charset> COLLATE <collation>`；不再需要自建 `*sql.DB` 绕行。标识符仅允许字母/数字/下划线；仅支持单一字符集，回退列表（`utf8mb4,utf8`）返回新哨兵错误 `ErrDSNUnsupported`（可用 `errors.Is` 判定），回退列表需要时经 `WithDSN` 的 `charset=` 参数设置
+- 新增 `WithDSN` Option，直接以完整 MySQL DSN 初始化连接配置（整体替换 MySQL 子配置，DSN 未写的参数按驱动默认）：本库未单独建模的驱动参数（`multiStatements`、`maxAllowedPacket`、charset 回退列表等）原样透传给驱动、不丢失；后续 Option 仍可覆盖单个字段（含 `WithHost`/`WithPort`），TLS 名或连接地址被覆盖时派生 TLS 状态（明文回退、证书 ServerName）会按新值重新标准化；驱动对已移除参数（如 `strict`）的 panic 被转换为 `ErrDSNUnsupported` 错误
+- 新增 `Client.Transaction(ctx, fn, txOpts...)` 事务便捷入口，等价 `WithTx(ctx, nil, fn, txOpts...)`，最常见调用不再写 `nil` 占位参数
+- 新增 `WithZapLogger` Option，直传 `*zap.Logger` 一步接入 SQL 日志，等价 `WithZlogger(zlogger.WithLogger(zlog), opts...)`
 
 ## [v1.2.0] - 2026-07-23
 

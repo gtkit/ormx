@@ -87,6 +87,10 @@ func WithPassword(password string) Option {
 //   - 失败不 panic：DSN 解析失败（含驱动已移除的 strict 等参数，此类可用
 //     errors.Is(err, ErrDSNUnsupported) 判定）会保留到 Open/RedactedDSN 时报错，
 //     即便后续 Option 覆盖了字段。
+//
+// 安全边界：DSN 仅应来自可信静态配置，不得直接接收用户输入，也不要记录包含凭据的
+// 原始 DSN（日志用 RedactedDSN）；未建模的驱动参数会被原样透传，包括可能影响安全
+// 边界的驱动开关（如 allowCleartextPasswords、tls=skip-verify）。
 func WithDSN(dsn string) Option {
 	return func(c *Config) {
 		m, state, err := parseDSNConfig(dsn)
@@ -138,7 +142,11 @@ func WithWriteTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithTLSConfig 设置 MySQL 驱动使用的 TLS 配置名称。
+// WithTLSConfig 设置 MySQL 驱动使用的 TLS 配置名称。支持驱动内置值
+// "true"、"false"、"skip-verify"、"preferred"，也支持经 mysql.RegisterTLSConfig
+// 注册的名称。生产环境推荐 "true" 或启用证书验证的自定义配置；
+// "preferred" 在服务端不支持 TLS 时会回退为明文连接，
+// "skip-verify" 加密但不验证服务端证书，两者仅适合受控环境。
 func WithTLSConfig(name string) Option {
 	return func(c *Config) {
 		c.MySQL.TLSConfig = name

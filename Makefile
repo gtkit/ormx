@@ -3,7 +3,8 @@
 
 LINT_TARGETS ?= ./...
 
-# 发版语义级别：patch（默认）/ minor。major 被本项目策略拒绝。
+# 发版语义级别：patch（默认）/ minor。当前脚本仅管理 v1 的 PATCH/MINOR 发布；
+# 破坏性变更需建立 /v2 模块，不由本脚本处理。
 BUMP ?= patch
 tool: ## Lint Go code with the installed golangci-lint
 	@ echo "▶️ golangci-lint run"
@@ -38,7 +39,7 @@ tag:
 	case "$(BUMP)" in \
 	  patch) new="v$$maj.$$min.$$((patch+1))" ;; \
 	  minor) new="v$$maj.$$((min+1)).0" ;; \
-	  major) echo "✗ 本项目只做 v1、不发 v2；且 MAJOR 还需 /v2 module path 重构（仅 bump tag 是错误发布），已拒绝"; exit 1 ;; \
+	  major) echo "✗ MAJOR 需建立 /v2 模块（module path 加 /v2），仅 bump tag 是错误发布，不由本脚本处理，已拒绝"; exit 1 ;; \
 	  *) echo "✗ BUMP 必须为 patch 或 minor（当前: $(BUMP)）"; exit 1 ;; \
 	esac; \
 	if ! grep -qE "^## \[$$new\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md; then \
@@ -58,7 +59,7 @@ tag:
 release-patch: ## 发布 PATCH 版本（bug 修复 / 文档 / 内部重构）
 	@$(MAKE) tag BUMP=patch
 
-release-minor: ## 发布 MINOR 版本（新增功能，或按本项目策略承载破坏性变更）
+release-minor: ## 发布 MINOR 版本（向后兼容的新功能）
 	@$(MAKE) tag BUMP=minor
 
 gittag:
