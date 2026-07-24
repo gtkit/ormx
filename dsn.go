@@ -77,11 +77,19 @@ func (c MySQLConfig) driverConfig(dsn *dsnState) (*mysqldriver.Config, error) {
 	dsnCharset := ""
 	if dsn != nil && dsn.base != nil {
 		cfg = dsn.base.Clone()
-		// TLS 配置名被后续 Option 覆盖时，重置基底中已解析的 TLS，让驱动按新名称重新解析。
-		if cfg.TLSConfig != c.TLSConfig {
+		dsnCharset = dsn.charset
+		// TLS 名或连接端点被后续 Option 覆盖时，重置基底解析期派生的 TLS 状态，
+		// 让驱动按新值重新标准化：重建 TLS、按新地址重推证书 ServerName。
+		tlsChanged := cfg.TLSConfig != c.TLSConfig
+		if tlsChanged || cfg.Net != network || cfg.Addr != addr {
 			cfg.TLS = nil
 		}
-		dsnCharset = dsn.charset
+		// tls=preferred 解析时驱动会置 AllowFallbackToPlaintext=true；TLS 名被覆盖后必须
+		// 一并清除，否则覆盖成 tls=true 的严格配置仍可能静默回退明文连接。
+		// 新值若仍为 preferred，驱动标准化会重新开启回退。
+		if tlsChanged {
+			cfg.AllowFallbackToPlaintext = false
+		}
 	}
 	cfg.User = c.User
 	cfg.Passwd = c.Password
@@ -191,12 +199,23 @@ func parseDSNConfig(dsn string) (MySQLConfig, *dsnState, error) {
 	}
 	// 同步拆出 Host/Port：WithHost/WithPort 覆盖时会清空 Addr 转而依赖 Host/Port，
 	// 只映射 Addr 会让 WithDSN 之后的单字段覆盖直接报 ErrAddressRequired。
-	if m.Net == netTCP {
+	if isTCPNetwork(m.Net) {
 		if host, port, splitErr := net.SplitHostPort(parsed.Addr); splitErr == nil {
 			m.Host, m.Port = host, port
 		}
 	}
 	return m, &dsnState{base: parsed, charset: charset}, nil
+}
+
+// isTCPNetwork 报告 network 是否为 host:port 形式的 TCP 网络。
+// 精确匹配三个标准取值，不用前缀判断，避免误认自定义网络名。
+func isTCPNetwork(network string) bool {
+	switch network {
+	case netTCP, "tcp4", "tcp6":
+		return true
+	default:
+		return false
+	}
 }
 
 // isMySQLIdent 报告 s 是否为仅含字母、数字与下划线的非空标识符。

@@ -300,6 +300,73 @@ func TestWithDSNCharsetOverrideAndClear(t *testing.T) {
 	}
 }
 
+func TestWithDSNTLSOverrideResetsDerivedState(t *testing.T) {
+	// tls=preferred 解析时驱动派生 AllowFallbackToPlaintext=true；
+	// 覆盖成严格 tls=true 后不得残留明文回退。
+	cfg := NewConfig(WithDSN("user@tcp(old-db:3306)/app?tls=preferred"), WithTLSConfig("true"))
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN: %v", err)
+	}
+	if strings.Contains(dsn, "allowFallbackToPlaintext") {
+		t.Fatalf("strict tls override must not keep plaintext fallback, got %q", dsn)
+	}
+	if !strings.Contains(dsn, "tls=true") {
+		t.Fatalf("expected tls=true, got %q", dsn)
+	}
+
+	dc, err := cfg.MySQL.driverConfig(cfg.dsn)
+	if err != nil {
+		t.Fatalf("driverConfig: %v", err)
+	}
+	if dc.AllowFallbackToPlaintext {
+		t.Fatal("expected AllowFallbackToPlaintext to be reset on tls override")
+	}
+}
+
+func TestWithDSNEndpointOverrideResetsDerivedTLS(t *testing.T) {
+	// tls=true 解析时驱动按旧地址推导 TLS.ServerName；改 Host 后必须清空派生 TLS，
+	// 让驱动按新地址重新推导，避免证书校验仍用旧主机名。
+	cfg := NewConfig(WithDSN("user@tcp(old-db:3306)/app?tls=true"), WithHost("new-db"))
+	dc, err := cfg.MySQL.driverConfig(cfg.dsn)
+	if err != nil {
+		t.Fatalf("driverConfig: %v", err)
+	}
+	if dc.Addr != "new-db:3306" {
+		t.Fatalf("expected addr new-db:3306, got %q", dc.Addr)
+	}
+	if dc.TLS != nil {
+		t.Fatalf("expected derived TLS to be reset on endpoint override, got ServerName=%q", dc.TLS.ServerName)
+	}
+	if dc.TLSConfig != "true" {
+		t.Fatalf("expected tls config name preserved, got %q", dc.TLSConfig)
+	}
+}
+
+func TestWithDSNPreferredTLSKeptWithoutOverride(t *testing.T) {
+	// 未覆盖时 tls=preferred 的明文回退语义原样保留。
+	cfg := NewConfig(WithDSN("user@tcp(db:3306)/app?tls=preferred"))
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN: %v", err)
+	}
+	if !strings.Contains(dsn, "allowFallbackToPlaintext=true") || !strings.Contains(dsn, "tls=preferred") {
+		t.Fatalf("expected preferred tls semantics preserved, got %q", dsn)
+	}
+}
+
+func TestWithDSNTCP6HostPortOverride(t *testing.T) {
+	// tcp4/tcp6 同为 host:port 形式，单字段覆盖必须与 tcp 一致可用。
+	cfg := NewConfig(WithDSN("user@tcp6([::1]:3306)/app"), WithPort("4406"))
+	dsn, err := cfg.RedactedDSN()
+	if err != nil {
+		t.Fatalf("RedactedDSN: %v", err)
+	}
+	if !strings.Contains(dsn, "tcp6([::1]:4406)") {
+		t.Fatalf("expected port override on tcp6, got %q", dsn)
+	}
+}
+
 func TestWithDSNStrictParamDoesNotPanic(t *testing.T) {
 	// 驱动 v1.10.0 对已移除的 strict 参数会 panic，本库须转换为可判定错误。
 	cfg := NewConfig(WithDSN("user@tcp(db:3306)/app?strict=true"))

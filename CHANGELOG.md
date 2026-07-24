@@ -2,7 +2,7 @@
 
 本文档记录 `github.com/gtkit/ormx` 的对外可见变更。
 
-格式参考 Keep a Changelog。本项目为自用库，仅维护 `v1`：不发 `v2`/`major`，破坏性变更通过 MINOR 发布并以 **⚠ 破坏性变更** 标注，因此不严格承诺 SemVer 的 MAJOR 语义。
+格式参考 Keep a Changelog，版本号遵循 Semantic Versioning 2.0.0：`v1` 阶段保持向后兼容，不再引入破坏性变更；确需破坏性变更时按 Go Module 规则发布 `/v2`。（v1.2.0 及更早版本曾按"破坏性变更走 MINOR"的旧策略发布，对应条目保留 **⚠ 破坏性变更** 标注供追溯。）
 
 ## [Unreleased]
 

@@ -3,6 +3,7 @@ package ormx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,28 @@ import (
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
+
+// Transaction 是最常见事务调用的便捷入口：fn 返回 nil 提交、返回 error 回滚，
+// 遇 MySQL 死锁/锁等待超时自动重试（示例用进程内 stub 数据库，可执行验证）。
+func ExampleClient_Transaction() {
+	sqlDB, _ := newStubDB()
+	defer sqlDB.Close()
+
+	client, err := OpenWithDB(context.Background(), sqlDB,
+		WithStartupPing(false), WithSkipInitializeWithVersion(true))
+	if err != nil {
+		fmt.Println("open:", err)
+		return
+	}
+	defer client.Close()
+
+	txErr := client.Transaction(context.Background(), func(tx *gorm.DB) error {
+		// 在事务中执行业务操作；返回 nil 则提交，返回 error 则回滚。
+		return tx.Exec("UPDATE widgets SET active = 1").Error
+	})
+	fmt.Println(txErr == nil)
+	// Output: true
+}
 
 func TestClientWithTxCommitAndRollback(t *testing.T) {
 	sqlDB, state := newStubDB()
