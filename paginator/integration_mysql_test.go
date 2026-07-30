@@ -3,6 +3,7 @@
 package paginator
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -336,7 +337,9 @@ func TestIntegrationNullableDistinctCountMismatch(t *testing.T) {
 	if err := db.Model(&itWidget{}).Distinct("nullable_name").Count(&count).Error; err != nil {
 		t.Fatalf("COUNT(DISTINCT nullable_name): %v", err)
 	}
-	var values []*string
+	// 目标类型必须实现 sql.Scanner：GORM 的 Pluck 对 []*string 会解引用后按 *string 扫描，
+	// 无法接收 NULL 行——而本用例的前提恰恰是 SELECT DISTINCT 会保留 NULL。
+	var values []sql.NullString
 	if err := db.Model(&itWidget{}).Distinct("nullable_name").Order("nullable_name").Pluck("nullable_name", &values).Error; err != nil {
 		t.Fatalf("SELECT DISTINCT nullable_name: %v", err)
 	}
