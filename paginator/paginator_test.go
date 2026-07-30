@@ -431,8 +431,8 @@ func TestScopesInjectedPaginationOverridden(t *testing.T) {
 }
 
 // TestNestedScopeOverrideRejected 嵌套 scope（scope 内部再注册 scope）会被 GORM 排到
-// 下一轮、也就是本包尾随 scope 之后，从而覆盖 LIMIT/OFFSET——真实数据库上 count 查询
-// 因此返回 0 行、总数静默为 0、翻页返回空页。必须在执行后按事实校验并报错。
+// 下一轮、也就是本包尾随 scope 之后。必须在 SQL 执行前按最终事实校验并报错，
+// 不能先执行被取消 LIMIT 的无界查询再返回错误。
 func TestNestedScopeOverrideRejected(t *testing.T) {
 	t.Parallel()
 
@@ -486,6 +486,16 @@ func TestNestedScopeOverrideRejected(t *testing.T) {
 			wantErr: ErrDeferredPaginationClause,
 		},
 		{
+			name:    "注入 Select",
+			inner:   func(d *gorm.DB) *gorm.DB { return d.Select("name") },
+			wantErr: ErrDeferredPaginationClause,
+		},
+		{
+			name:    "注入 Raw",
+			inner:   func(d *gorm.DB) *gorm.DB { return d.Raw("SELECT id, name FROM widgets") },
+			wantErr: ErrDeferredPaginationClause,
+		},
+		{
 			name:  "追加次级排序列无害（本包列仍在最前）",
 			inner: func(d *gorm.DB) *gorm.DB { return d.Order("name DESC") },
 		},
@@ -511,6 +521,9 @@ func TestNestedScopeOverrideRejected(t *testing.T) {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tt.wantErr)
 				}
+				if qs := queries(t, state); len(qs) != 0 {
+					t.Fatalf("执行前拦截不得发出 SQL: %v", qs)
+				}
 
 				return
 			}
@@ -521,6 +534,99 @@ func TestNestedScopeOverrideRejected(t *testing.T) {
 				t.Fatalf("total=%d items=%d, want 25/1", got.TotalCount, len(got.Items))
 			}
 		})
+	}
+}
+
+func TestNestedScopeAppendedOrderRemovedFromCount(t *testing.T) {
+	t.Parallel()
+
+	state := &scriptState{total: 25, rows: []widget{{1, "a"}}}
+	db := newScriptedDB(t, state)
+	query := db.Model(&widget{}).Scopes(func(d *gorm.DB) *gorm.DB {
+		return d.Scopes(func(d *gorm.DB) *gorm.DB {
+			return d.Order("name DESC")
+		})
+	})
+
+	if _, err := Paginate[widget](query, Params{Page: 1, PageSize: 5}); err != nil {
+		t.Fatalf("Paginate() error = %v", err)
+	}
+	qs := queries(t, state)
+	if len(qs) != 2 {
+		t.Fatalf("queries = %v, want count and data", qs)
+	}
+	if strings.Contains(strings.ToUpper(qs[0]), "ORDER BY") {
+		t.Fatalf("count SQL 不得保留嵌套 scope 的 ORDER BY: %q", qs[0])
+	}
+	if !strings.Contains(strings.ToUpper(qs[1]), "ORDER BY") {
+		t.Fatalf("data SQL 应保留安全的追加排序: %q", qs[1])
+	}
+}
+
+func TestDeferredProjectionSameClassRejectedBeforeQuery(t *testing.T) {
+	t.Parallel()
+
+	nest := func(inner func(*gorm.DB) *gorm.DB) func(*gorm.DB) *gorm.DB {
+		return func(d *gorm.DB) *gorm.DB { return d.Scopes(inner) }
+	}
+	tests := []struct {
+		name   string
+		query  func(*gorm.DB) *gorm.DB
+		opts   []Option
+		params Params
+	}{
+		{
+			name: "Distinct 改列",
+			query: func(db *gorm.DB) *gorm.DB {
+				return db.Model(&widget{}).Distinct("name").Scopes(nest(func(d *gorm.DB) *gorm.DB {
+					return d.Distinct("id")
+				}))
+			},
+			opts:   []Option{WithTotal(5)},
+			params: Params{PageSize: 5, Sort: "name"},
+		},
+		{
+			name: "Group 追加列",
+			query: func(db *gorm.DB) *gorm.DB {
+				return db.Model(&widget{}).Select("name, id").Group("name").Scopes(nest(func(d *gorm.DB) *gorm.DB {
+					return d.Group("id")
+				}))
+			},
+			params: Params{PageSize: 5, Sort: "name"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			state := &scriptState{total: 5, rows: []widget{{1, "a"}}}
+			db := newScriptedDB(t, state)
+
+			if _, err := Paginate[widget](tt.query(db), tt.params, tt.opts...); !errors.Is(err, ErrDeferredPaginationClause) {
+				t.Fatalf("err = %v, want ErrDeferredPaginationClause", err)
+			}
+			if qs := queries(t, state); len(qs) != 0 {
+				t.Fatalf("执行前拦截不得发出 SQL: %v", qs)
+			}
+		})
+	}
+}
+
+func TestNestedScopeCancelLimitStopsBeforeDataQuery(t *testing.T) {
+	t.Parallel()
+
+	state := &scriptState{total: 25, rows: []widget{{1, "a"}}}
+	db := newScriptedDB(t, state)
+	query := db.Model(&widget{}).Scopes(func(d *gorm.DB) *gorm.DB {
+		return d.Scopes(func(inner *gorm.DB) *gorm.DB { return inner.Limit(noLimit) })
+	})
+
+	if _, err := Paginate[widget](query, Params{PageSize: 5}); !errors.Is(err, ErrDeferredPaginationClause) {
+		t.Fatalf("err = %v, want ErrDeferredPaginationClause", err)
+	}
+	qs := queries(t, state)
+	if len(qs) != 1 || !isCountQuery(qs[0]) {
+		t.Fatalf("只允许先完成正常 Count，不得执行无 LIMIT 的数据 SQL: %v", qs)
 	}
 }
 
@@ -806,6 +912,24 @@ func TestErrorPaths(t *testing.T) {
 	if _, err := Paginate[widget](&gorm.DB{}, Params{}); !errors.Is(err, ErrNilDB) {
 		t.Fatalf("零值 db: err = %v, want ErrNilDB", err)
 	}
+	for name, partial := range map[string]*gorm.DB{
+		"缺 Config":         {Statement: &gorm.Statement{}},
+		"Statement 未关联 DB": {Config: &gorm.Config{}, Statement: &gorm.Statement{}},
+	} {
+		if _, err := Paginate[widget](partial, Params{}); !errors.Is(err, ErrNilDB) {
+			t.Fatalf("%s: err = %v, want ErrNilDB", name, err)
+		}
+	}
+	missingConnPool := &gorm.DB{Config: &gorm.Config{}}
+	missingConnPool.Statement = &gorm.Statement{DB: missingConnPool}
+	if _, err := Paginate[widget](missingConnPool, Params{}); !errors.Is(err, ErrNilDB) {
+		t.Fatalf("缺 ConnPool: err = %v, want ErrNilDB", err)
+	}
+	missingContext := newScriptedDB(t, &scriptState{})
+	missingContext.Statement.Context = nil
+	if _, err := Paginate[widget](missingContext, Params{}); !errors.Is(err, ErrNilDB) {
+		t.Fatalf("缺 Context: err = %v, want ErrNilDB", err)
+	}
 
 	countErr := errors.New("count boom")
 	state := &scriptState{countEr: countErr}
@@ -819,6 +943,96 @@ func TestErrorPaths(t *testing.T) {
 	if _, err := Paginate[widget](newScriptedDB(t, state2).Model(&widget{}), Params{}); !errors.Is(err, findErr) ||
 		!strings.Contains(err.Error(), "query page") {
 		t.Fatalf("find 错误应包装并可穿透: %v", err)
+	}
+}
+
+func TestRawQueryRejectedBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	for _, opts := range [][]Option{nil, {WithTotal(0)}, {WithTotal(5)}} {
+		state := &scriptState{total: 5, rows: []widget{{1, "a"}}}
+		db := newScriptedDB(t, state)
+		query := db.Raw("SELECT id, name FROM widgets")
+
+		if _, err := Paginate[widget](query, Params{PageSize: 2}, opts...); !errors.Is(err, ErrDeferredPaginationClause) {
+			t.Fatalf("err = %v, want ErrDeferredPaginationClause", err)
+		}
+		if qs := queries(t, state); len(qs) != 0 {
+			t.Fatalf("Raw 查询不得执行: %v", qs)
+		}
+	}
+
+	state := &scriptState{total: 5, rows: []widget{{1, "a"}}}
+	db := newScriptedDB(t, state)
+	query := db.Model(&widget{}).Scopes(func(d *gorm.DB) *gorm.DB {
+		return d.Scopes(func(inner *gorm.DB) *gorm.DB {
+			return inner.Raw("SELECT id, name FROM widgets")
+		})
+	})
+	if _, err := Paginate[widget](query, Params{PageSize: 2}, WithTotal(5)); !errors.Is(err, ErrDeferredPaginationClause) {
+		t.Fatalf("scope Raw: err = %v, want ErrDeferredPaginationClause", err)
+	}
+	if qs := queries(t, state); len(qs) != 0 {
+		t.Fatalf("scope Raw 不得执行: %v", qs)
+	}
+}
+
+func TestCallerScopeInvocationCounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		opts      []Option
+		wantCalls int
+	}{
+		{name: "自动 Count", wantCalls: 2},
+		{name: "WithTotal 正数", opts: []Option{WithTotal(5)}, wantCalls: 1},
+		{name: "WithTotal 零值", opts: []Option{WithTotal(0)}, wantCalls: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := &scriptState{total: 5, rows: []widget{{1, "a"}}}
+			db := newScriptedDB(t, state)
+			calls := 0
+			query := db.Model(&widget{}).Scopes(func(d *gorm.DB) *gorm.DB {
+				calls++
+				return d.Where("name <> ?", "x")
+			})
+
+			if _, err := Paginate[widget](query, Params{PageSize: 5}, tt.opts...); err != nil {
+				t.Fatalf("Paginate() error = %v", err)
+			}
+			if calls != tt.wantCalls {
+				t.Fatalf("scope calls = %d, want %d", calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestCallerScopeSeesRealDestinations(t *testing.T) {
+	state := &scriptState{total: 5, rows: []widget{{1, "a"}}}
+	db := newScriptedDB(t, state)
+	seen := make([]string, 0, 2)
+	query := db.Model(&widget{}).Scopes(func(d *gorm.DB) *gorm.DB {
+		switch d.Statement.Dest.(type) {
+		case *int64:
+			seen = append(seen, "count")
+		case *[]widget:
+			seen = append(seen, "data")
+		default:
+			seen = append(seen, "unexpected")
+		}
+
+		return d
+	})
+
+	if _, err := Paginate[widget](query, Params{PageSize: 5}); err != nil {
+		t.Fatalf("Paginate() error = %v", err)
+	}
+	if !slices.Equal(seen, []string{"count", "data"}) {
+		t.Fatalf("scope destinations = %v, want [count data]", seen)
 	}
 }
 
@@ -936,6 +1150,29 @@ func BenchmarkPaginate(b *testing.B) {
 			b.Fatal(pErr)
 		}
 	}
+}
+
+func BenchmarkPaginateParallel(b *testing.B) {
+	state := &scriptState{total: 1000, rows: []widget{{1, "a"}, {2, "b"}}, norecord: true}
+	sqlDB := sql.OpenDB(&scriptConnector{state: state})
+	defer sqlDB.Close()
+	db, err := gorm.Open(gormmysql.New(gormmysql.Config{Conn: sqlDB, SkipInitializeWithVersion: true}),
+		&gorm.Config{Logger: gormlogger.Discard})
+	if err != nil {
+		b.Fatal(err)
+	}
+	query := db.Model(&widget{}).Where("name <> ?", "x")
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, pErr := Paginate[widget](query, Params{Page: 3, PageSize: 20, Sort: "name"}); pErr != nil {
+				b.Errorf("Paginate() error = %v", pErr)
+
+				return
+			}
+		}
+	})
 }
 
 // 复合主键模型（两个显式关闭自增的主键）。
@@ -1082,15 +1319,20 @@ func TestSortMappingDefensiveCopy(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRestrictedProjectionRequiresExplicitSortAndTotal 受限投影下的收窄契约：
-// 必须显式提供排序列与总数；排序列不加表限定、不追加主键 tiebreaker。
+// 必须显式提供排序列；DISTINCT 还必须提供总数，GROUP BY 可自动统计。
 func TestRestrictedProjectionRequiresExplicitSortAndTotal(t *testing.T) {
 	t.Parallel()
 
 	restrict := []struct {
-		name  string
-		apply func(*gorm.DB) *gorm.DB
+		name      string
+		apply     func(*gorm.DB) *gorm.DB
+		wantTotal bool
 	}{
-		{name: "Distinct", apply: func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("name") }},
+		{
+			name:      "Distinct",
+			apply:     func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("name") },
+			wantTotal: true,
+		},
 		{name: "GroupBy", apply: func(db *gorm.DB) *gorm.DB {
 			return db.Model(&widget{}).Select("name, COUNT(*) AS c").Group("name")
 		}},
@@ -1101,33 +1343,35 @@ func TestRestrictedProjectionRequiresExplicitSortAndTotal(t *testing.T) {
 			t.Parallel()
 			assertRestrictedError(t, r.apply, Params{}, ErrSortRequired)
 		})
-		t.Run(r.name+"/有排序即可自动统计", func(t *testing.T) {
+		t.Run(r.name+"/有排序", func(t *testing.T) {
 			t.Parallel()
+			if r.wantTotal {
+				assertRestrictedError(t, r.apply, Params{Sort: "name", PageSize: 5}, ErrTotalRequired)
+
+				return
+			}
 			assertRestrictedSuccess(t, r.apply)
 		})
 	}
 }
 
-// TestDistinctCountReliabilityBoundary GORM 只在「选择列表恰好一项且能切成单个字段」时
-// 生成 count(DISTINCT col)，否则退化为 count(*) 返回总行数。多列 Distinct 若被当作可靠，
-// 总数会静默错报（实测 25 行 / 15 个去重组合返回 25），故必须要求 WithTotal。
+// TestDistinctCountReliabilityBoundary COUNT(DISTINCT col) 排除 NULL，而 SELECT DISTINCT col
+// 会保留一个 NULL；多列 Distinct 又会被 GORM 退化为 count(*)。所有 DISTINCT 都必须
+// fail-closed 要求 WithTotal，不能根据列数猜测统计可靠。
 func TestDistinctCountReliabilityBoundary(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		apply    func(*gorm.DB) *gorm.DB
-		reliable bool
+		name  string
+		apply func(*gorm.DB) *gorm.DB
 	}{
 		{
-			name:     "单列 Distinct",
-			apply:    func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("name") },
-			reliable: true,
+			name:  "单列 Distinct",
+			apply: func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("name") },
 		},
 		{
-			name:     "单列 Distinct 带表限定",
-			apply:    func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("widgets.name") },
-			reliable: true,
+			name:  "单列 Distinct 带表限定",
+			apply: func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("widgets.name") },
 		},
 		{
 			name:  "多列 Distinct",
@@ -1145,30 +1389,30 @@ func TestDistinctCountReliabilityBoundary(t *testing.T) {
 			name:  "单列 Distinct 带引号（保守判为不可靠）",
 			apply: func(db *gorm.DB) *gorm.DB { return db.Model(&widget{}).Distinct("`name`") },
 		},
+		{
+			name: "Distinct 与 Group 同时存在",
+			apply: func(db *gorm.DB) *gorm.DB {
+				return db.Model(&widget{}).Distinct("name").Group("id")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if !tt.reliable {
-				assertRestrictedError(t, tt.apply, Params{Sort: "name", PageSize: 5}, ErrTotalRequired)
+			assertRestrictedError(t, tt.apply, Params{Sort: "name", PageSize: 5}, ErrTotalRequired)
 
-				// 显式提供总数即可放行
-				state := &scriptState{total: 15, rows: []widget{{1, "a"}}}
-				db := newScriptedDB(t, state)
-				got, err := Paginate[widget](tt.apply(db),
-					Params{Sort: "name", PageSize: 10}, WithTotal(15))
-				if err != nil {
-					t.Fatalf("WithTotal 后应放行: %v", err)
-				}
-				if got.TotalCount != 15 || got.TotalPage != 2 {
-					t.Fatalf("total=%d pages=%d, want 15/2", got.TotalCount, got.TotalPage)
-				}
-
-				return
+			state := &scriptState{total: 15, rows: []widget{{1, "a"}}}
+			db := newScriptedDB(t, state)
+			got, err := Paginate[widget](tt.apply(db),
+				Params{Sort: "name", PageSize: 10}, WithTotal(15))
+			if err != nil {
+				t.Fatalf("WithTotal 后应放行: %v", err)
 			}
-			assertRestrictedSuccess(t, tt.apply)
+			if got.TotalCount != 15 || got.TotalPage != 2 {
+				t.Fatalf("total=%d pages=%d, want 15/2", got.TotalCount, got.TotalPage)
+			}
 		})
 	}
 }
@@ -1188,7 +1432,7 @@ func assertRestrictedError(t *testing.T, apply func(*gorm.DB) *gorm.DB, params P
 }
 
 // assertRestrictedSuccess 受限投影提供显式排序后：排序列不限定、不追加 tiebreaker，
-// 且 Count 语义可靠的形式（链式 Distinct / GROUP BY）走自动统计。
+// Count 语义可靠的 GROUP BY 走自动统计。
 func assertRestrictedSuccess(t *testing.T, apply func(*gorm.DB) *gorm.DB) {
 	t.Helper()
 	state := &scriptState{total: 5, rows: []widget{{1, "a"}}}
@@ -1291,6 +1535,11 @@ func TestStructuredSelectDistinctDetected(t *testing.T) {
 	for _, sel := range []string{
 		"DISTINCT name", "DISTINCTROW name", "distinct(name)",
 		"DISTINCT\nname", "DISTINCT\r\n\tname", "  distinct\tname  ",
+		"/*+ INDEX(widgets idx_name) */ DISTINCT name",
+		"/* comment */\nDISTINCTROW name",
+		"-- comment\nDISTINCT name",
+		"# comment\nDISTINCT name",
+		"/*!50000 DISTINCT */ name",
 	} {
 		st := &scriptState{total: 5, rows: []widget{{1, "a"}}}
 		h := newScriptedDB(t, st).Model(&widget{}).Select(sel)

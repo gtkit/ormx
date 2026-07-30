@@ -355,28 +355,30 @@ page, err := paginator.Paginate[Topic](query,
     paginator.Params{Page: 2, PageSize: 20, Sort: "created", Order: "desc"},
     paginator.WithSortMapping(map[string]string{"created": "created_at"}), // 线上推荐
 )
-// page.Items（恒非 nil）/ CurrentPage / TotalPage / TotalCount
+// err == nil 时 page.Items 恒非 nil；另含 CurrentPage / TotalPage / TotalCount
 ```
 
 **核心契约：**
 
-- **三子句全权负责**：入参句柄上残留的 ORDER BY / LIMIT / OFFSET 会被清除，分页与排序只由 `Params` 与 Option 决定；WHERE/Joins/Select 等其余条件原样保留。这三个子句以**追加在最后的 scope** 形式下发，所以写在 `Scopes` 里的排序与分页（GORM 官方文档正把分页列为 Scopes 的典型用法）会被本包覆盖，而**不会**反过来截断统计或破坏排序——scope 的 `Where` 等条件仍照常生效。
-- **嵌套 scope 会被拦下**：GORM 的执行入口是「只要还有 scope 就再跑一轮」的多轮循环，**scope 内部再注册 scope**（组合式 helper）会排到下一轮、也就是本包之后。`gorm.Statement.scopes` 未导出、包外无法排空，因此本包在语句**执行后按事实校验**，任一项不符即返回 `ErrDeferredPaginationClause`（不发额外 SQL、不重跑调用方 scope；数据库若也一并报错，根因包在同一个错误里，`errors.Is` 两者都能判到）：
+- **三子句全权负责**：入参句柄上链式设置的 ORDER BY / LIMIT / OFFSET 会被清除，分页与排序只由 `Params` 与 Option 决定；链式 WHERE/Joins/Select 等其余条件原样保留。这三个子句以**追加在最后的 scope** 形式下发，所以写在 `Scopes` 里的排序与分页（GORM 官方文档正把分页列为 Scopes 的典型用法）会被本包覆盖，而**不会**反过来截断统计或破坏排序——scope 的 `Where` 等条件仍照常生效。
+- **嵌套 scope 会在执行前被拦下**：GORM 的执行入口是「只要还有 scope 就再跑一轮」的多轮循环，**scope 内部再注册 scope**（组合式 helper）会排到下一轮、也就是本包之后。`gorm.Statement.scopes` 未导出、包外无法排空，因此本包通过 `StatementModifier` 在全部 scope 结束后、SQL 构建前按事实校验，任一项不符即返回 `ErrDeferredPaginationClause`；不会先执行被取消 LIMIT 的无界查询，也不会用 DryRun 探针重复执行调用方 scope：
 
   | 被改动的东西 | 放行后的静默后果 |
   |---|---|
   | LIMIT / OFFSET 被覆盖 | 统计被截断 → 总数为 0、翻页返回空页 |
   | 排序被 `Reorder` 截断 | 行序由调用方决定，翻页稳定性失效 |
   | `clause.OrderBy.Expression` 顶替排序 | `Build` 完全忽略 `Columns`（实测生成 `ORDER BY RAND()`）→ 翻页重复且遗漏 |
-  | scope 里注入 `Distinct` / `Group` | 数据查询去重、统计查询不去重 → 总数偏大、尾页为空 |
+  | scope 里改 `Select` / `Distinct` / `Group` | Count 策略与数据投影不一致 → 总数错误或扫描失败 |
+  | scope 里注入 `Raw` | GORM 忽略普通分页 Clause → 返回未分页数据 |
 
-  嵌套 scope 只加条件（`Where` 等）时不受影响。**scope 里改 `Select` 不在比对范围内**（本包不解析选择列表语义），它可能让 Count 装配的 `count(*)` 被冲掉从而扫描失败，也可能改变「总数」的含义——请不要在 scope 里改 `Select`。
+  嵌套 scope 只加条件（`Where` 等）时不受影响；普通追加排序若不截断本包排序，也会保留在数据查询末尾，但会从 Count 中移除。投影快照覆盖 `Distinct`、`Selects`、SELECT Clause 与 GROUP BY Clause；请把 `Select`/`Distinct`/`Group` 写在链式调用上。
 - **入参句柄零污染**：内部先把 Statement 私有化再工作，调用后原句柄可安全复用；多个 goroutine 并发把同一句柄传给 `Paginate` 也是安全的（`-race` 覆盖）。**但该句柄同时被用于其它查询（`Find`/`First`/`Count` 等）不安全**——这是 GORM 句柄语义所限，请各 goroutine 自行 `Session`/`WithContext` 派生。
 - **结构化排序，不拼原始 SQL**：排序经 GORM 的 `clause.OrderBy` 下发，列名由方言引擎加引号——**保留字列（如 `order`）可安全排序**。列名文法校验（点分 1~2 段、每段合法标识符，拒绝纯数字位置排序与空段）作为第二道防线。
 - **自动表名限定**：排序列与主键列在**表名可判定时**自动加表名前缀，消除 Join 场景的列歧义。可判定：纯 Model 查询、`Table("t")`、`Table("db.t")`、`Table("t AS a")`、`Table("t a")`、`Table("(SELECT …) AS a")`（带别名时用别名）。**不可判定**：`Table` 表达式含 JOIN／多表（GORM 提取不出别名，回退基表名会生成 FROM 里不存在的限定名 → Error 1054），此时一律不限定，排序列需调用方自行限定；**自动追加的主键次级排序同样会是裸列名**——多张表都有同名主键列时数据库会报列歧义（MySQL Error 1052，响亮失败）。这类查询请改用 `Model` + `Joins`（schema 表名可判定，主键会被限定），或经 `WithDefaultSort` 指定已限定的排序列并确认主键列名在该查询里不歧义。别名与计算列（不属模型字段）也保持未限定。
 - **排序稳定性**：默认按模型主键排序（自定义主键、复合主键自动识别全集）；指定其他排序列时自动追加**全部主键列**作次级排序，方向跟随主排序，同列不同写法自动去重。**在数据集不变且排序键组合唯一时**翻页不重不漏。
 - **PageSize 有上限**（默认 100）：该参数常来自远端请求，钳制以防无界查询。任意配置值（含 `math.MaxInt`）与任意总数（含 `math.MaxInt64`）下均不 panic、分页元信息不溢出。
-- **入参错误不吞**：句柄携带的 `db.Error` 在入口即被包装返回，任何路径（含 `WithTotal` 短路）都不会静默成功；模型不可解析时透传 `parse model` 根因而非伪装成排序错误。
+- **入参错误不吞**：句柄携带的 `db.Error` 在入口即被包装返回，任何路径（含 `WithTotal` 短路）都不会静默成功；缺少 Config、Dialector、ConnPool、Statement、Context 等 `gorm.Open` 初始化状态的手工句柄统一返回 `ErrNilDB`；模型不可解析时透传 `parse model` 根因而非伪装成排序错误。
+- **不接受 Raw 查询句柄**：`db.Raw(...)` 会预先填充 `Statement.SQL`，GORM 随后不会重建 ORDER BY / LIMIT / OFFSET；本包无法可靠改写，故执行前返回 `ErrDeferredPaginationClause`。Raw SQL 请在分页器外自行分页，或改用 `Model`/`Table` 查询构建器。
 
 | 参数 | 行为 |
 |------|------|
@@ -392,7 +394,7 @@ page, err := paginator.Paginate[Topic](query,
 | `WithMaxPageSize(n)` | PageSize 上限，默认 100。上限本身是信任边界配置：调大即接受对应查询开销 |
 | `WithDefaultSort(col)` | 覆盖默认排序列（默认模型主键） |
 | `WithSortMapping(m)` | 外部排序键→受信任列的显式映射：防注入之余限制可排序列集合（防无索引大排序），线上推荐。`m` 不得为 nil（零键 allowlist 传空 map）；构造时做防御性复制，之后修改原 map 不影响行为 |
-| `WithTotal(n)` | 调用方提供总数并跳过 count。多列链式 Distinct、`clause.Select{Distinct}`、原始字符串 `Select("DISTINCT …")` 下为**必需项**；单列链式 Distinct 与 GROUP BY 可自动统计（高基数分组建议仍用本项，见下） |
+| `WithTotal(n)` | 调用方提供总数并跳过 count。所有 DISTINCT 查询均为**必需项**；GROUP BY 可自动统计（高基数分组建议仍用本项，见下） |
 
 ### 受限投影（DISTINCT / GROUP BY）
 
@@ -407,27 +409,30 @@ page, err := paginator.Paginate[Topic](
 
 - 未提供显式排序列 → 返回 `ErrSortRequired`，且**不发出任何 SQL**；
 - 提供后该排序列不做表名限定、不追加主键次级排序，与投影的兼容性由调用方保证。
+- 受限投影当前只能表达一个排序列；该列或别名必须能唯一确定结果行。多列 GROUP BY 若不存在唯一单列排序键，不适合使用本分页器，否则相同排序值的行序不稳定。
 
 **统计（Count）语义按去重写法区分**，以真实 MySQL 8 实测为准：
 
 | 写法 | GORM Count 生成 | 总数 | 本包行为 |
 |------|----------------|------|---------|
-| **单列** `.Distinct("col")` | `count(DISTINCT col)` | 去重数，准确 | 自动统计 |
+| **单列** `.Distinct("col")` | `count(DISTINCT col)` | 排除 NULL，可能比 `SELECT DISTINCT col` 少 1 | 返回 `ErrTotalRequired` |
 | `.Group("col")` / `clause.GroupBy` | `count(*) … GROUP BY`，取返回行数（`*count = tx.RowsAffected`） | 分组数量，准确 | 自动统计 |
 | **多列** `.Distinct("a","b")` / `.Distinct().Select("a, b")` | `count(*)` | **总行数，非去重数** | 返回 `ErrTotalRequired` |
 | `Clauses(clause.Select{Distinct: true})` | `count(*)` | **总行数，非去重数** | 返回 `ErrTotalRequired` |
 | 原始字符串 `Select("DISTINCT …")` / `Select("DISTINCTROW …")` | `count(*)` | **总行数，非去重数** | 返回 `ErrTotalRequired` |
 
-GORM 只在「选择列表恰好一项、且能切成单个字段」时才生成 `count(DISTINCT col)`。实测 25 行 / 15 个去重组合的表上，`Distinct("name", "`order`")` 的 Count 返回 **25**——若当作可靠会静默错报总数并多出一页空页。本包的判定比 GORM 更严（单项且为合法列引用，带引号/别名的写法一律按不可靠处理），只会把可靠的判成需要 `WithTotal`，不会反向放行错误总数。
+即使 GORM 生成了 `count(DISTINCT col)`，它也不能证明分页总数可靠：MySQL 的 Count 排除 NULL，而数据查询会保留一个 NULL。实测可空列有 5 个非空去重值和 1 个 NULL 时，Count 返回 **5**、数据投影返回 **6**。多列 `Distinct("name", "`order`")` 又会退化为 `count(*)`（25 行 / 15 个去重组合时返回 25）。因此本包对所有 DISTINCT 统一 fail-closed，必须传入准确的 `WithTotal`。
 
 > **GROUP BY 自动统计的代价**：统计查询每个分组返回一行，开销为 O(分组数) 的网络传输与扫描。高基数分组（几十万以上）请改用 `WithTotal` 自行统计。
 
-> **写在 `Scopes` 里的 `Distinct`/`Group` 会被执行后的投影比对拦下**（返回 `ErrDeferredPaginationClause`，见上表）：它们在构建前不可见，本包据此选定的排序与统计策略会失效。`Select` 的投影变化**不在比对范围内**（本包不解析选择列表语义），可能表现为 Count 扫描失败（响亮）或「总数」含义改变。请把 `Distinct`/`Group`/`Select` 都写在链式调用上。
+> **写在 `Scopes` 里的 `Select`/`Distinct`/`Group` 会在 SQL 执行前被投影快照拦下**（返回 `ErrDeferredPaginationClause`，见上表）。原始字符串前的空白、`/* ... */`、`-- ...`、`# ...` 注释及优化器 hint 会先被跳过，再识别 `DISTINCT`/`DISTINCTROW`。
 
 ### 其他使用限制（如实声明）
 
 - 非受限投影下 Count 遵循 GORM Count 语义：入参含 `Select`/`Joins` 时"总数"含义随之变化（`COUNT(col)` 跳过 NULL、has-many Join 重复计数）；不符合需求时用 `WithTotal`。
 - Count 与数据查询是两条 SQL，**非一致性快照**；严格一致场景请传入事务内句柄。
+- 调用方 Scope 必须是确定且无副作用的查询装配函数：自动 Count 时同一 Scope 执行 **2 次**（Count、数据各一次），`WithTotal(n>0)` 时执行 **1 次**，`WithTotal(0)` 时执行 **0 次**。`time.Now()`、随机值、递增计数器或一次性迭代器应在调用 `Paginate` 前求值并捕获；事务不能修复两次 Scope 生成了不同条件的问题。Scope 只能使用 GORM 公开链式 API 返回查询句柄，不得直接改写 `Statement.Dest`、`Statement.SQL`、`Statement.Clauses` 等内部状态，也不得在 Scope 内执行查询。
+- 自定义 GORM Query callback 不得在 `StatementModifier` 之后改写 ORDER BY、LIMIT、OFFSET 或投影；这类全局 callback 超出单次查询守卫的控制范围。仓库内置代码未注册此类 callback，下游接入 GORM 插件时需自行确认。
 - 仅 OFFSET 分页：深分页（大数据量 × 大页码）不适合高频接口，此类场景应采用游标分页（不属于本包 API）。
 - `WithTotal` 传入的总数**不与实际数据核对**：值不准（缓存陈旧、算错）时会静默产出错误页数与空页，准确性由调用方负责。
 - 行为**仅在 MySQL 8 上做过真实数据库验证**。其他方言的引号与 DISTINCT/GROUP BY 宽容度不同（SQLite 对 ORDER BY 不在选择列表中更宽容、Postgres 加引号后大小写敏感），使用前请自行验证。

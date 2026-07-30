@@ -34,10 +34,11 @@ const (
 )
 
 type itWidget struct {
-	ID    int64    `gorm:"primaryKey"`
-	Name  string   `gorm:"size:64;index"`
-	Order int      `gorm:"column:order"` // 保留字列名
-	Notes []itNote `gorm:"foreignKey:WidgetID"`
+	ID           int64    `gorm:"primaryKey"`
+	Name         string   `gorm:"size:64;index"`
+	NullableName *string  `gorm:"size:64"`
+	Order        int      `gorm:"column:order"` // 保留字列名
+	Notes        []itNote `gorm:"foreignKey:WidgetID"`
 }
 
 func (itWidget) TableName() string { return "it_widgets" }
@@ -131,7 +132,17 @@ func newIntegrationDB(t *testing.T) *gorm.DB {
 	// 25 行 widgets：name 每 5 行重复一次（制造非唯一排序列），order 保留字列有值
 	widgets := make([]itWidget, 0, 25)
 	for i := 1; i <= 25; i++ {
-		widgets = append(widgets, itWidget{ID: int64(i), Name: fmt.Sprintf("n%02d", i%5), Order: i % 3})
+		var nullableName *string
+		if i != 25 {
+			value := fmt.Sprintf("v%02d", i%5)
+			nullableName = &value
+		}
+		widgets = append(widgets, itWidget{
+			ID:           int64(i),
+			Name:         fmt.Sprintf("n%02d", i%5),
+			NullableName: nullableName,
+			Order:        i % 3,
+		})
 	}
 	if err := db.Create(&widgets).Error; err != nil {
 		t.Fatalf("插入 widgets: %v", err)
@@ -282,7 +293,7 @@ func TestIntegrationCompositePrimaryKey(t *testing.T) {
 
 // TestIntegrationDistinctProjection DISTINCT 查询：
 // 自动追加主键 tiebreaker 会被 MySQL 拒绝（ORDER BY 列不在选择列表），
-// 因此受限投影必须要求显式排序且不追加 tiebreaker。
+// 因此受限投影必须要求显式排序且不追加 tiebreaker；总数必须显式提供。
 func TestIntegrationDistinctProjection(t *testing.T) {
 	db := newIntegrationDB(t)
 
@@ -292,29 +303,20 @@ func TestIntegrationDistinctProjection(t *testing.T) {
 		t.Fatal("DISTINCT 未提供显式排序应报错")
 	}
 
-	// 链式 Distinct 的 Count 生成 COUNT(DISTINCT ...)，去重数准确——先证明这一前提
+	// 非 NULL 数据上 GORM Count 恰好与结果数一致，但分页器仍不得据此推断所有列可靠。
 	var distinctNames int64
 	if err := db.Model(&itWidget{}).Distinct("name").Count(&distinctNames).Error; err != nil {
 		t.Fatalf("统计去重数: %v", err)
 	}
 	if distinctNames != 5 {
-		t.Fatalf("GORM 对链式 Distinct 的 Count = %d, want 5（自动统计前提不成立）", distinctNames)
+		t.Fatalf("GORM 对链式 Distinct 的 Count = %d, want 5", distinctNames)
 	}
 
-	// 显式排序即可：总数自动统计（不需要 WithTotal），且不得追加主键 tiebreaker
-	got, err := Paginate[itWidget](db.Model(&itWidget{}).Distinct("name"),
-		Params{PageSize: 10, Sort: "name"})
-	if err != nil {
-		t.Fatalf("DISTINCT + 兼容排序应被接受: %v", err)
-	}
-	if got.TotalCount != 5 {
-		t.Fatalf("DISTINCT 总数=%d, want 5", got.TotalCount)
-	}
-	if len(got.Items) != 5 {
-		t.Fatalf("DISTINCT items=%d, want 5", len(got.Items))
+	if _, err := Paginate[itWidget](db.Model(&itWidget{}).Distinct("name"),
+		Params{PageSize: 10, Sort: "name"}); !errors.Is(err, ErrTotalRequired) {
+		t.Fatalf("err = %v, want ErrTotalRequired", err)
 	}
 
-	// WithTotal 仍可显式覆盖
 	explicit, err := Paginate[itWidget](db.Model(&itWidget{}).Distinct("name"),
 		Params{PageSize: 2, Sort: "name"}, WithTotal(distinctNames))
 	if err != nil {
@@ -322,6 +324,36 @@ func TestIntegrationDistinctProjection(t *testing.T) {
 	}
 	if explicit.TotalCount != 5 || explicit.TotalPage != 3 {
 		t.Fatalf("total=%d pages=%d, want 5/3", explicit.TotalCount, explicit.TotalPage)
+	}
+}
+
+// TestIntegrationNullableDistinctCountMismatch 证明单列 DISTINCT 也不能自动统计：
+// SELECT DISTINCT 会保留一个 NULL，COUNT(DISTINCT col) 则排除 NULL。
+func TestIntegrationNullableDistinctCountMismatch(t *testing.T) {
+	db := newIntegrationDB(t)
+
+	var count int64
+	if err := db.Model(&itWidget{}).Distinct("nullable_name").Count(&count).Error; err != nil {
+		t.Fatalf("COUNT(DISTINCT nullable_name): %v", err)
+	}
+	var values []*string
+	if err := db.Model(&itWidget{}).Distinct("nullable_name").Order("nullable_name").Pluck("nullable_name", &values).Error; err != nil {
+		t.Fatalf("SELECT DISTINCT nullable_name: %v", err)
+	}
+	if count != 5 || len(values) != 6 {
+		t.Fatalf("count=%d distinct rows=%d, want 5/6", count, len(values))
+	}
+
+	query := db.Model(&itWidget{}).Distinct("nullable_name")
+	if _, err := Paginate[itWidget](query, Params{PageSize: 5, Sort: "nullable_name"}); !errors.Is(err, ErrTotalRequired) {
+		t.Fatalf("err = %v, want ErrTotalRequired", err)
+	}
+	got, err := Paginate[itWidget](query, Params{Page: 2, PageSize: 5, Sort: "nullable_name"}, WithTotal(6))
+	if err != nil {
+		t.Fatalf("WithTotal: %v", err)
+	}
+	if got.TotalCount != 6 || got.TotalPage != 2 || len(got.Items) != 1 {
+		t.Fatalf("total=%d pages=%d items=%d, want 6/2/1", got.TotalCount, got.TotalPage, len(got.Items))
 	}
 }
 
@@ -442,12 +474,12 @@ func TestIntegrationScopesInjectedDistinctJoin(t *testing.T) {
 			err, got.TotalCount)
 	}
 
-	// 对照：把 Distinct 写在链式调用上即受契约保护，总数按去重后的实体数
+	// 对照：把 Distinct 写在链式调用上并显式提供总数即受契约保护。
 	chained := db.Model(&itWidget{}).
 		Joins("JOIN it_notes n ON n.widget_id = it_widgets.id").
 		Where("it_widgets.id <= ?", 3).
 		Distinct("it_widgets.id")
-	ok, err := Paginate[itWidget](chained, Params{PageSize: 10, Sort: "it_widgets.id"})
+	ok, err := Paginate[itWidget](chained, Params{PageSize: 10, Sort: "it_widgets.id"}, WithTotal(3))
 	if err != nil {
 		t.Fatalf("链式 Distinct 应被接受: %v", err)
 	}
