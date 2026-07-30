@@ -24,5 +24,5 @@
 //
 // [Client] 可在多个 goroutine 间并发使用；调用方注入的 logger、HealthProbe、
 // TxRetryObserver 的并发安全由调用方保证。
-// GORM 的 zap 日志适配见子包 zlogger。
+// GORM 的 zap 日志适配见子包 zlogger；通用分页查询执行器见子包 paginator。
 package ormx

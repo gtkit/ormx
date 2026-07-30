@@ -6,17 +6,15 @@
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-07-30
+
 ### Added
+
+- 新增子包 `paginator`：基于 GORM 的通用分页查询执行器。泛型 `Paginate[T](db, Params, ...Option) (Page[T], error)`。分页三子句（ORDER/LIMIT/OFFSET）由本包全权负责——入参残留子句清除，且这三个子句以**追加在最后的 scope** 形式下发，写在 `Scopes` 里的排序与分页（GORM 官方文档的典型用法）会被本包覆盖而非反过来截断统计、破坏排序；scope 内部再注册 scope（组合式 helper）会被 GORM 排到本包之后，此时在语句执行后按事实校验三子句并返回 `ErrDeferredPaginationClause`（不发额外 SQL、不重跑调用方 scope；数据库同时报错时根因一并包在同一错误里），而不是静默产出总数为 0 的空页；入参句柄零污染（进入时即私有化 Statement，可安全复用，并发把同一句柄传入亦安全，`-race` 覆盖）；排序经 `clause.OrderBy` 结构化下发、列名由方言引擎加引号（保留字列如 `order` 可安全排序，不拼接原始 SQL），排序列与主键列在表名可判定时自动加表名限定（消除 Join 列歧义；`Table("t AS a")`/`Table("t a")` 用别名、`Table("t")`/`Table("db.t")` 用表名，`Table` 表达式含 JOIN/多表时取不准则一律不限定，避免生成 FROM 里不存在的限定名；别名/计算列不误加前缀）；默认按模型主键排序并自动追加全部主键列（含复合主键）作次级排序、方向跟随主排序、同列不同写法去重，在数据集不变且排序键组合唯一时翻页不重不漏；受限投影（链式 `.Distinct`/`.Group`、结构化 `clause.Select{Distinct}`/`clause.GroupBy`、原始字符串 `Select("DISTINCT …")`）必须显式提供排序列（否则返回 `ErrSortRequired` 且不发出任何 SQL），该列不做表名限定、不追加主键次级排序；统计语义按写法区分并以真实 MySQL 8 实测为准——**单列**链式 `.Distinct(col)` 生成 `count(DISTINCT col)`、GROUP BY 取统计查询返回行数（即分组数量，代价为 O(分组数) 行传输，高基数分组请用 `WithTotal`），两者可自动统计；**多列**链式 Distinct、`clause.Select{Distinct}`、原始字符串 DISTINCT/DISTINCTROW（含 `clause.Select{Expression: clause.Expr{SQL: "DISTINCT …"}}` 这种结构化外壳套原始串的形式）一律退化为 `count(*)` 返回总行数而非去重数，必须经 `WithTotal` 提供总数，否则返回 `ErrTotalRequired`（判定比 GORM 的条件更严，只会多要求 `WithTotal`，不会反向放行错误总数）；写在 `Scopes` 里的 `Distinct`/`Group`/`Select` 构建前不可见、得不到契约保护，结果一律是响亮失败（`Group` 触发 Error 1055，`Distinct`/多列 `Select` 触发 Count 扫描错误）而非静默产出错误结果；PageSize 钳制上限（默认 100，`WithMaxPageSize` 调整），任意 Option 值（含 `math.MaxInt`）与任意总数（含 `math.MaxInt64`）下均不 panic、元信息不溢出（总页数用除法实现并做 offset/int 双重上界保护，不按 pageSize 预分配切片）；入参句柄的 `db.Error` 在入口包装返回、模型不可解析时透传 `parse model` 根因；未配置映射时 `Params.Sort` 作为远端输入只接受本模型字段（跨表引用与未知列回退默认排序）；`WithSortMapping` 外部键→受信任列显式映射（nil 报错、构造期防御性复制）、`WithDefaultSort`、`WithTotal`（三者由开发者配置，视为受信任列）；列名文法校验拒绝纯数字位置排序与空段；Items 恒非 nil。Count 语义限制（Select/Joins）、非一致性快照、深分页与排序稳定性前提均在文档如实声明；并发语义、`WithTotal` 准确性、方言验证范围（仅 MySQL 8）等边界均在文档如实声明；真实 MySQL 集成测试（DISTINCT/多列 DISTINCT 总数/GROUP BY/结构化 Distinct/Scopes 注入分页与 GROUP BY/嵌套 scope 覆盖/保留字/Join 同名列/JOIN 表达式/表别名三形态/复合主键/Preload/Count 隔离/翻页不重不漏）为发布前置条件，`make tag` 强制执行且不可经环境变量跳过
 
 ### Changed
 
-### Deprecated
-
-### Removed
-
-### Fixed
-
-### Security
+- 发版脚本 `make tag` 补齐 `go mod tidy -diff`、gosec 与真实 MySQL 集成测试（发布前置条件，运行开关硬编码且 `ORM_REQUIRE_INTEGRATION=1` 让缺条件从 skip 变为 fail，防止静默跳过后照常打 tag）；`make tool` 改为只读检查（gofumpt 不一致即失败），写文件的格式化移到新增的 `make fmt`；新增 `make test-integration`
 
 ## [v1.3.0] - 2026-07-24
 
