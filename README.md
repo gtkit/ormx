@@ -361,10 +361,19 @@ page, err := paginator.Paginate[Topic](query,
 **核心契约：**
 
 - **三子句全权负责**：入参句柄上残留的 ORDER BY / LIMIT / OFFSET 会被清除，分页与排序只由 `Params` 与 Option 决定；WHERE/Joins/Select 等其余条件原样保留。这三个子句以**追加在最后的 scope** 形式下发，所以写在 `Scopes` 里的排序与分页（GORM 官方文档正把分页列为 Scopes 的典型用法）会被本包覆盖，而**不会**反过来截断统计或破坏排序——scope 的 `Where` 等条件仍照常生效。
-- **嵌套 scope 会被拦下**：GORM 的执行入口是「只要还有 scope 就再跑一轮」的多轮循环，**scope 内部再注册 scope**（组合式 helper）会排到下一轮、也就是本包之后，从而覆盖 LIMIT/OFFSET——统计被截断则总数静默为 0、翻页返回空页。`gorm.Statement.scopes` 未导出、包外无法排空，因此本包在语句**执行后按事实校验**三子句是否仍是自己设置的值，不一致即返回 `ErrDeferredPaginationClause`（不发额外 SQL、不重跑调用方 scope；若数据库也一并报错，根因会包在同一个错误里，用 `errors.Is` 都能判到）。嵌套 scope 只加条件时不受影响。
+- **嵌套 scope 会被拦下**：GORM 的执行入口是「只要还有 scope 就再跑一轮」的多轮循环，**scope 内部再注册 scope**（组合式 helper）会排到下一轮、也就是本包之后。`gorm.Statement.scopes` 未导出、包外无法排空，因此本包在语句**执行后按事实校验**，任一项不符即返回 `ErrDeferredPaginationClause`（不发额外 SQL、不重跑调用方 scope；数据库若也一并报错，根因包在同一个错误里，`errors.Is` 两者都能判到）：
+
+  | 被改动的东西 | 放行后的静默后果 |
+  |---|---|
+  | LIMIT / OFFSET 被覆盖 | 统计被截断 → 总数为 0、翻页返回空页 |
+  | 排序被 `Reorder` 截断 | 行序由调用方决定，翻页稳定性失效 |
+  | `clause.OrderBy.Expression` 顶替排序 | `Build` 完全忽略 `Columns`（实测生成 `ORDER BY RAND()`）→ 翻页重复且遗漏 |
+  | scope 里注入 `Distinct` / `Group` | 数据查询去重、统计查询不去重 → 总数偏大、尾页为空 |
+
+  嵌套 scope 只加条件（`Where` 等）时不受影响。**scope 里改 `Select` 不在比对范围内**（本包不解析选择列表语义），它可能让 Count 装配的 `count(*)` 被冲掉从而扫描失败，也可能改变「总数」的含义——请不要在 scope 里改 `Select`。
 - **入参句柄零污染**：内部先把 Statement 私有化再工作，调用后原句柄可安全复用；多个 goroutine 并发把同一句柄传给 `Paginate` 也是安全的（`-race` 覆盖）。**但该句柄同时被用于其它查询（`Find`/`First`/`Count` 等）不安全**——这是 GORM 句柄语义所限，请各 goroutine 自行 `Session`/`WithContext` 派生。
 - **结构化排序，不拼原始 SQL**：排序经 GORM 的 `clause.OrderBy` 下发，列名由方言引擎加引号——**保留字列（如 `order`）可安全排序**。列名文法校验（点分 1~2 段、每段合法标识符，拒绝纯数字位置排序与空段）作为第二道防线。
-- **自动表名限定**：排序列与主键列在**表名可判定时**自动加表名前缀，消除 Join 场景的列歧义。可判定：纯 Model 查询、`Table("t")`、`Table("db.t")`、`Table("t AS a")`、`Table("t a")`、`Table("(SELECT …) AS a")`（带别名时用别名）。**不可判定**：`Table` 表达式含 JOIN／多表（GORM 提取不出别名，回退基表名会生成 FROM 里不存在的限定名 → Error 1054），此时一律不限定，Join 列歧义需调用方自行限定排序列。别名与计算列（不属模型字段）也保持未限定。
+- **自动表名限定**：排序列与主键列在**表名可判定时**自动加表名前缀，消除 Join 场景的列歧义。可判定：纯 Model 查询、`Table("t")`、`Table("db.t")`、`Table("t AS a")`、`Table("t a")`、`Table("(SELECT …) AS a")`（带别名时用别名）。**不可判定**：`Table` 表达式含 JOIN／多表（GORM 提取不出别名，回退基表名会生成 FROM 里不存在的限定名 → Error 1054），此时一律不限定，排序列需调用方自行限定；**自动追加的主键次级排序同样会是裸列名**——多张表都有同名主键列时数据库会报列歧义（MySQL Error 1052，响亮失败）。这类查询请改用 `Model` + `Joins`（schema 表名可判定，主键会被限定），或经 `WithDefaultSort` 指定已限定的排序列并确认主键列名在该查询里不歧义。别名与计算列（不属模型字段）也保持未限定。
 - **排序稳定性**：默认按模型主键排序（自定义主键、复合主键自动识别全集）；指定其他排序列时自动追加**全部主键列**作次级排序，方向跟随主排序，同列不同写法自动去重。**在数据集不变且排序键组合唯一时**翻页不重不漏。
 - **PageSize 有上限**（默认 100）：该参数常来自远端请求，钳制以防无界查询。任意配置值（含 `math.MaxInt`）与任意总数（含 `math.MaxInt64`）下均不 panic、分页元信息不溢出。
 - **入参错误不吞**：句柄携带的 `db.Error` 在入口即被包装返回，任何路径（含 `WithTotal` 短路）都不会静默成功；模型不可解析时透传 `parse model` 根因而非伪装成排序错误。
@@ -383,7 +392,7 @@ page, err := paginator.Paginate[Topic](query,
 | `WithMaxPageSize(n)` | PageSize 上限，默认 100。上限本身是信任边界配置：调大即接受对应查询开销 |
 | `WithDefaultSort(col)` | 覆盖默认排序列（默认模型主键） |
 | `WithSortMapping(m)` | 外部排序键→受信任列的显式映射：防注入之余限制可排序列集合（防无索引大排序），线上推荐。`m` 不得为 nil（零键 allowlist 传空 map）；构造时做防御性复制，之后修改原 map 不影响行为 |
-| `WithTotal(n)` | 调用方提供总数并跳过 count；`clause.Select{Distinct}` 与原始字符串 `Select("DISTINCT …")` 下为**必需项**（见下） |
+| `WithTotal(n)` | 调用方提供总数并跳过 count。多列链式 Distinct、`clause.Select{Distinct}`、原始字符串 `Select("DISTINCT …")` 下为**必需项**；单列链式 Distinct 与 GROUP BY 可自动统计（高基数分组建议仍用本项，见下） |
 
 ### 受限投影（DISTINCT / GROUP BY）
 
@@ -413,7 +422,7 @@ GORM 只在「选择列表恰好一项、且能切成单个字段」时才生成
 
 > **GROUP BY 自动统计的代价**：统计查询每个分组返回一行，开销为 O(分组数) 的网络传输与扫描。高基数分组（几十万以上）请改用 `WithTotal` 自行统计。
 
-> **写在 `Scopes` 里的 `Distinct`/`Group`/`Select` 得不到契约保护**：它们在执行阶段才物化，构建前识别不到，本包会按普通查询追加主键次级排序。结果一律是**响亮失败而非静默错误**——`Group` 触发 `ONLY_FULL_GROUP_BY` 拒绝（Error 1055），`Distinct` 与多列 `Select` 触发 Count 的扫描/类型错误（错误文本由 GORM 与 driver 给出，指向性较差）。请把它们写在链式调用上。
+> **写在 `Scopes` 里的 `Distinct`/`Group` 会被执行后的投影比对拦下**（返回 `ErrDeferredPaginationClause`，见上表）：它们在构建前不可见，本包据此选定的排序与统计策略会失效。`Select` 的投影变化**不在比对范围内**（本包不解析选择列表语义），可能表现为 Count 扫描失败（响亮）或「总数」含义改变。请把 `Distinct`/`Group`/`Select` 都写在链式调用上。
 
 ### 其他使用限制（如实声明）
 

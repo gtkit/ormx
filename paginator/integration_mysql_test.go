@@ -398,6 +398,64 @@ func TestIntegrationNestedScopeOverride(t *testing.T) {
 	}
 }
 
+// TestIntegrationNestedScopeOrderExpression 嵌套 scope 用 clause.OrderBy.Expression
+// 顶替排序：Build 会完全忽略 Columns，而 MergeClause 把本包的 Columns 原样复制过来，
+// 只查 Columns 会被骗过。实测放行时生成 ORDER BY RAND()，OFFSET 分页重复且遗漏。
+func TestIntegrationNestedScopeOrderExpression(t *testing.T) {
+	db := newIntegrationDB(t)
+
+	handle := db.Model(&itWidget{}).Scopes(func(d *gorm.DB) *gorm.DB {
+		return d.Scopes(func(x *gorm.DB) *gorm.DB {
+			return x.Clauses(clause.OrderBy{Expression: clause.Expr{SQL: "RAND()"}})
+		})
+	})
+	got, err := Paginate[itWidget](handle, Params{Page: 1, PageSize: 5})
+	if !errors.Is(err, ErrDeferredPaginationClause) {
+		ids := make([]int64, 0, len(got.Items))
+		for _, w := range got.Items {
+			ids = append(ids, w.ID)
+		}
+		t.Fatalf("err = %v, want ErrDeferredPaginationClause（放行时行序不可控：ids=%v）", err, ids)
+	}
+}
+
+// TestIntegrationScopesInjectedDistinctJoin scope 注入 Distinct + 一对多 JOIN：
+// 数据查询去重、统计查询不去重，总数按 JOIN 后的重复行计数——实测 3 个实体报 6。
+// 投影在构建前不可见，必须在执行后比对并拦下。
+func TestIntegrationScopesInjectedDistinctJoin(t *testing.T) {
+	db := newIntegrationDB(t)
+
+	// 给 id<=3 的 widget 各补一条 note，使 JOIN 后行数翻倍
+	if err := db.Exec(
+		"INSERT INTO it_notes (id, widget_id, body) VALUES (901,1,'x'),(902,2,'x'),(903,3,'x')").Error; err != nil {
+		t.Fatalf("插入 notes: %v", err)
+	}
+
+	handle := db.Model(&itWidget{}).
+		Joins("JOIN it_notes n ON n.widget_id = it_widgets.id").
+		Where("it_widgets.id <= ?", 3).
+		Scopes(func(d *gorm.DB) *gorm.DB { return d.Distinct() })
+
+	got, err := Paginate[itWidget](handle, Params{PageSize: 10, Sort: "id"})
+	if !errors.Is(err, ErrDeferredPaginationClause) {
+		t.Fatalf("err = %v, want ErrDeferredPaginationClause（放行时 total=%d 而实体只有 3 条）",
+			err, got.TotalCount)
+	}
+
+	// 对照：把 Distinct 写在链式调用上即受契约保护，总数按去重后的实体数
+	chained := db.Model(&itWidget{}).
+		Joins("JOIN it_notes n ON n.widget_id = it_widgets.id").
+		Where("it_widgets.id <= ?", 3).
+		Distinct("it_widgets.id")
+	ok, err := Paginate[itWidget](chained, Params{PageSize: 10, Sort: "it_widgets.id"})
+	if err != nil {
+		t.Fatalf("链式 Distinct 应被接受: %v", err)
+	}
+	if ok.TotalCount != 3 {
+		t.Fatalf("total=%d, want 3", ok.TotalCount)
+	}
+}
+
 // TestIntegrationMultiColumnDistinctTotal 多列 Distinct 的 GORM Count 退化为 count(*)：
 // 返回总行数而非去重组合数。若当作可靠会静默错报总数并多出空页，必须要求 WithTotal。
 func TestIntegrationMultiColumnDistinctTotal(t *testing.T) {
@@ -434,8 +492,9 @@ func TestIntegrationMultiColumnDistinctTotal(t *testing.T) {
 }
 
 // TestIntegrationScopesInjectedGroupBy Scopes 注入的 GROUP BY 在构建前不可见，
-// 本包按普通查询处理并追加主键次级排序——在 ONLY_FULL_GROUP_BY 下必须被数据库
-// 响亮拒绝（Error 1055），而不是静默产出错误结果。文档要求把 Group 写在链式调用上。
+// 本包按普通查询处理（会追加与分组冲突的主键次级排序、统计语义也随之改变）。
+// 执行后的投影比对必须把它拦下并给出指向根因的错误，而不是让调用方去猜数据库的
+// Error 1055，更不能静默产出结果。文档要求把 Group 写在链式调用上。
 func TestIntegrationScopesInjectedGroupBy(t *testing.T) {
 	db := newIntegrationDB(t)
 
@@ -455,11 +514,8 @@ func TestIntegrationScopesInjectedGroupBy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Paginate[itWidget](scoped(), tc.params, tc.opts...)
-			if err == nil {
-				t.Fatal("Scopes 注入 GROUP BY 应被数据库拒绝，不得静默返回结果")
-			}
-			if !strings.Contains(err.Error(), "1055") {
-				t.Fatalf("err = %v, want ONLY_FULL_GROUP_BY (Error 1055)", err)
+			if !errors.Is(err, ErrDeferredPaginationClause) {
+				t.Fatalf("err = %v, want ErrDeferredPaginationClause", err)
 			}
 		})
 	}

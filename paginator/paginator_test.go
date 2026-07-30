@@ -467,6 +467,25 @@ func TestNestedScopeOverrideRejected(t *testing.T) {
 			wantErr: ErrDeferredPaginationClause,
 		},
 		{
+			name: "用 OrderBy.Expression 顶替排序",
+			inner: func(d *gorm.DB) *gorm.DB {
+				// Build 一旦发现 Expression 非 nil 就完全忽略 Columns，
+				// 而 MergeClause 会把本包的 Columns 原样复制过来——只查 Columns 会被骗过
+				return d.Clauses(clause.OrderBy{Expression: clause.Expr{SQL: "RAND()"}})
+			},
+			wantErr: ErrDeferredPaginationClause,
+		},
+		{
+			name:    "注入 Distinct（数据去重而统计不去重）",
+			inner:   func(d *gorm.DB) *gorm.DB { return d.Distinct() },
+			wantErr: ErrDeferredPaginationClause,
+		},
+		{
+			name:    "注入 GROUP BY",
+			inner:   func(d *gorm.DB) *gorm.DB { return d.Group("name") },
+			wantErr: ErrDeferredPaginationClause,
+		},
+		{
 			name:  "追加次级排序列无害（本包列仍在最前）",
 			inner: func(d *gorm.DB) *gorm.DB { return d.Order("name DESC") },
 		},
@@ -782,6 +801,10 @@ func TestErrorPaths(t *testing.T) {
 
 	if _, err := Paginate[widget](nil, Params{}); !errors.Is(err, ErrNilDB) {
 		t.Fatalf("nil db: err = %v, want ErrNilDB", err)
+	}
+	// 手工构造的零值句柄：Statement 为 nil，放行会在 GORM 内部 panic
+	if _, err := Paginate[widget](&gorm.DB{}, Params{}); !errors.Is(err, ErrNilDB) {
+		t.Fatalf("零值 db: err = %v, want ErrNilDB", err)
 	}
 
 	countErr := errors.New("count boom")
@@ -1264,8 +1287,11 @@ func TestStructuredSelectDistinctDetected(t *testing.T) {
 		t.Fatalf("提供 WithTotal 后应可用: %v", err)
 	}
 
-	// DISTINCTROW 是 MySQL 里 DISTINCT 的同义词，同样要识别
-	for _, sel := range []string{"DISTINCT name", "DISTINCTROW name", "distinct(name)"} {
+	// DISTINCTROW 是 MySQL 里 DISTINCT 的同义词；关键字与列名之间可以是任意空白
+	for _, sel := range []string{
+		"DISTINCT name", "DISTINCTROW name", "distinct(name)",
+		"DISTINCT\nname", "DISTINCT\r\n\tname", "  distinct\tname  ",
+	} {
 		st := &scriptState{total: 5, rows: []widget{{1, "a"}}}
 		h := newScriptedDB(t, st).Model(&widget{}).Select(sel)
 		if _, err := Paginate[widget](h, Params{PageSize: 5}); !errors.Is(err, ErrSortRequired) {

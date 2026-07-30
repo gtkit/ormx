@@ -5,9 +5,9 @@
 //     同类子句会被清除（分页与排序只由 Params 与 Option 决定），其余条件
 //     （WHERE/Joins/Select 等）原样保留；这三个子句以追加在最后的 scope 形式下发，
 //     因此 Scopes 里写的排序与分页（GORM 官方文档正把分页列为 Scopes 的典型用法）
-//     会被本包覆盖，而不会反过来截断统计或破坏排序。唯一的例外是 scope 内部再注册
-//     scope（组合式 helper）：GORM 把它排到下一轮、也就是本包之后，此时本包在语句
-//     执行后按事实校验并返回 [ErrDeferredPaginationClause]，不静默产出错误页；
+//     会被本包覆盖，而不会反过来截断统计或破坏排序。例外是 scope 内部再注册 scope
+//     （组合式 helper）：GORM 把它排到下一轮、也就是本包之后，此时本包在语句执行后
+//     按事实校验并返回 [ErrDeferredPaginationClause]，不静默产出错误页；
 //   - 入参句柄零污染：内部经独立 Session 工作，调用后原句柄可安全复用；
 //     多个 goroutine 并发把同一句柄传给 Paginate 也是安全的。但该句柄同时被用于
 //     其它查询（Find/First/Count 等）不安全——那是 GORM 句柄语义所限，
@@ -16,8 +16,11 @@
 //     保留字列（如 order）可安全排序，不拼接原始 SQL；
 //   - 排序列与主键列在表名可判定时自动加表名限定（防 Join 场景列歧义）：
 //     纯 Model 查询、Table("t")/Table("db.t")/Table("t AS a")/Table("t a") 均可判定；
-//     Table 表达式含 JOIN、子查询、多表时取不准，一律不限定（此时 Join 列歧义
-//     需调用方自行限定排序列）；
+//     Table 表达式含 JOIN、子查询、多表时取不准，一律不限定。此时排序列需调用方
+//     自行限定，而自动追加的主键次级排序也会是裸列名——若多张表都有同名主键列，
+//     数据库会报列歧义（MySQL Error 1052，响亮失败）。这类查询请用 Model + Joins
+//     （schema 表名可判定，主键会被限定），或经 [WithDefaultSort] 指定已限定的
+//     排序列并确认主键列名在该查询里不歧义；
 //   - 排序稳定性：自动追加全部主键列（含复合主键）作为次级排序，方向跟随主排序——
 //     在数据集不变且排序键组合唯一时翻页不重不漏（模型不可解析而由调用方显式指定
 //     排序时无法追加主键；OFFSET 分页跨请求增删时仍可能重/漏，见使用限制）；
@@ -50,12 +53,16 @@
 //     （实测 Distinct("name", "`order`") 在 25 行 / 15 个去重组合上返回 25），
 //     必须经 [WithTotal] 提供总数，否则返回 [ErrTotalRequired]。
 //
-// 受限投影的识别只看构建前可见的状态：链式 Distinct/Group、clause.Select{Distinct}、
-// clause.GroupBy、原始字符串里的 DISTINCT/DISTINCTROW 前缀。写在 Scopes 里的投影修饰在执行阶段
-// 才物化、识别不到，本包按普通查询处理，结果一律是响亮失败而非静默错误：
-// Group 触发 ONLY_FULL_GROUP_BY 拒绝（Error 1055），Distinct 与多列 Select 触发
-// Count 的扫描/类型错误（错误文本由 GORM 与 driver 给出，指向性较差）。
-// 请把 Distinct/Group/Select 写在链式调用上。
+// 受限投影的识别分两次：构建前看链式 Distinct/Group、clause.Select{Distinct}、
+// clause.GroupBy、原始字符串里的 DISTINCT/DISTINCTROW 前缀（据此决定排序与统计策略），
+// 语句执行后再判一次并与之比对。写在 Scopes 里的 Distinct/Group 在执行阶段才物化，
+// 会让「数据查询去重/分组、统计查询不去重」（实测一对多 JOIN + scope 内 Distinct 时
+// 总数按 JOIN 后的重复行计数，静默偏大），故比对不一致即返回
+// [ErrDeferredPaginationClause]。请把 Distinct/Group 写在链式调用上。
+//
+// Scopes 里改 Select 的投影不在比对范围内（本包不解析选择列表语义）：
+// 它可能让 Count 装配的 count(*) 子句被冲掉从而扫描失败（响亮），
+// 也可能改变"总数"的含义。请不要在 scope 里改 Select。
 //
 // 其他使用限制（如实声明）：
 //   - 非受限投影下 Count 遵循 GORM Count 语义：入参含 Select/Joins 时"总数"含义
@@ -86,6 +93,8 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -107,8 +116,9 @@ const (
 	noLimit = -1
 )
 
-// ErrNilDB 表示传入的 *gorm.DB 为 nil。
-var ErrNilDB = errors.New("paginator: nil db")
+// ErrNilDB 表示传入的 *gorm.DB 不可用：为 nil，或是手工构造的零值（Statement 为 nil，
+// 未经 gorm.Open 初始化）。后者若放行会在 GORM 内部 panic，故一并在入口拒绝。
+var ErrNilDB = errors.New("paginator: nil or uninitialized db (use a handle from gorm.Open)")
 
 // ErrNoSortColumn 表示模型没有主键、调用方也未提供排序列，无法确定排序。
 var ErrNoSortColumn = errors.New(
@@ -130,18 +140,25 @@ var ErrTotalRequired = errors.New(
 	"paginator: WithTotal required for this DISTINCT form (GORM Count loses the DISTINCT semantics " +
 		"and returns the row count); use a single-column .Distinct(col) instead, or compute the total explicitly")
 
-// ErrDeferredPaginationClause 表示嵌套 scope 覆盖了本包的分页子句。
+// ErrDeferredPaginationClause 表示 Scopes 等延迟机制改变了本包据以工作的语句状态，
+// 沿用则会静默产出错误的分页结果。两类触发原因：
 //
-// GORM 的执行入口是「只要还有 scope 就再跑一轮」的多轮循环，而 scope 内部再注册的
-// scope（组合式 scope helper 的常见写法）会排到下一轮——也就是本包尾随 scope 之后，
-// 从而覆盖 LIMIT/OFFSET：统计被截断则总数静默为 0、翻页静默返回空页。
-// gorm.Statement.scopes 未导出，无法在包外排空，故本包在语句执行后按事实校验，
-// 不一致即报错，绝不静默产出错误结果。
-// 请把排序与分页经 Params / Option 传入，不要写在（嵌套的）scope 里。
+//   - 分页与排序子句被覆盖。GORM 的执行入口是「只要还有 scope 就再跑一轮」的多轮循环，
+//     scope 内部再注册的 scope（组合式 helper 的常见写法）排到下一轮、也就是本包尾随
+//     scope 之后，于是覆盖 LIMIT/OFFSET（统计被截断则总数静默为 0、翻页返回空页），
+//     或用 clause.OrderBy.Expression 顶替整个排序（Build 会完全忽略 Columns，
+//     实测生成 ORDER BY RAND()，OFFSET 分页因此重复与遗漏）；
+//   - 投影被改。scope 里的 Distinct/Group 在构建前不可见，本包据此选定的排序与统计
+//     策略随之失效——数据查询去重/分组而统计查询不去重（实测一对多 JOIN + scope 内
+//     Distinct 时总数按 JOIN 后的重复行计数，静默偏大）。
+//
+// gorm.Statement.scopes 未导出、无法在包外排空，故本包在语句执行后按事实校验，
+// 不一致即报错。请把排序、分页与 Distinct/Group 都写在链式调用或 Params / Option 上，
+// 不要写在（嵌套的）scope 里。
 var ErrDeferredPaginationClause = errors.New(
-	"paginator: ORDER BY/LIMIT/OFFSET overridden by a nested scope (a scope that registers another scope " +
-		"runs after this package's trailing scope) and would silently corrupt the page; " +
-		"pass sorting/pagination via Params/Option instead")
+	"paginator: sorting/pagination clauses or projection changed by a deferred scope (a scope that registers " +
+		"another scope runs after this package's trailing scope) and would silently corrupt the page; " +
+		"pass sorting/pagination via Params/Option and put Distinct/Group on the chain instead")
 
 // Params 分页请求参数（常绑定自远端请求）：
 //   - Page：页码，从 1 开始；越界自动钳制到 [1, 总页数]。
@@ -237,8 +254,11 @@ func WithSortMapping(m map[string]string) Option {
 	}
 }
 
-// WithTotal 由调用方提供总数并跳过 count 查询：适用于总数已缓存、count 过重，
-// 或默认 Count 语义不符合需求的场景；DISTINCT / GROUP BY 查询下为必需项。
+// WithTotal 由调用方提供总数并跳过 count 查询：适用于总数已缓存、count 过重、
+// 默认 Count 语义不符合需求，或高基数 GROUP BY（自动统计需拉回 O(分组数) 行）的场景。
+// 在 GORM 的 Count 会丢失去重语义的写法上是必需项（多列链式 Distinct、
+// clause.Select{Distinct}、原始字符串 DISTINCT，见 [ErrTotalRequired]）；
+// 单列链式 Distinct 与 GROUP BY 可自动统计，不强制本项。
 // total 不得为负。
 func WithTotal(total int64) Option {
 	return func(s *settings) error {
@@ -256,7 +276,7 @@ func WithTotal(total int64) Option {
 // db 为已组装查询条件的句柄（未显式 Model/Table 时按 T 推导）；超时与取消经
 // db.WithContext 由调用方控制。入参句柄不会被修改，调用后可安全复用。
 func Paginate[T any](db *gorm.DB, params Params, opts ...Option) (Page[T], error) {
-	if db == nil {
+	if db == nil || db.Statement == nil {
 		return Page[T]{}, ErrNilDB
 	}
 	if db.Error != nil {
@@ -281,7 +301,7 @@ func Paginate[T any](db *gorm.DB, params Params, opts ...Option) (Page[T], error
 		tx = tx.Model(new(T))
 	}
 
-	proj := projectionOf(tx)
+	proj := projectionOf(tx.Statement)
 
 	order, err := buildOrder(tx, params, &s, proj.restricted)
 	if err != nil {
@@ -314,7 +334,9 @@ func Paginate[T any](db *gorm.DB, params Params, opts ...Option) (Page[T], error
 	res := tx.Session(&gorm.Session{}).
 		Scopes(applyPaginationScope(order, pageSize, offset)).
 		Find(&items)
-	if !paginationIntact(res.Statement, pageSize, offset) || !orderIntact(res.Statement, order) {
+	if !paginationIntact(res.Statement, pageSize, offset) ||
+		!orderIntact(res.Statement, order, proj.restricted) ||
+		projectionOf(res.Statement) != proj {
 		if res.Error != nil {
 			return Page[T]{}, fmt.Errorf("%w: query page: %w", ErrDeferredPaginationClause, res.Error)
 		}
@@ -337,9 +359,9 @@ func Paginate[T any](db *gorm.DB, params Params, opts ...Option) (Page[T], error
 // 传入非 nil Context 可让 Session 立即克隆 Statement（见 gorm.go 的 Session 实现），
 // 是不依赖内部字段就能私有化的唯一手段。
 func privateSession(db *gorm.DB) *gorm.DB {
-	ctx := context.Background()
-	if db.Statement != nil && db.Statement.Context != nil {
-		ctx = db.Statement.Context
+	ctx := db.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	return db.Session(&gorm.Session{Context: ctx})
@@ -358,10 +380,11 @@ func resolveTotal(tx *gorm.DB, s *settings, proj projection) (int64, error) {
 
 	var total int64
 	res := tx.Session(&gorm.Session{}).Scopes(stripPaginationScope).Count(&total)
-	// 先判分页子句：被嵌套 scope 截断时 count 查询要么返回 0 行（总数静默为 0）、
-	// 要么直接被数据库拒绝（如只注入 OFFSET 时的 Error 1064）——两种都以本包的
-	// 哨兵为主错误，避免调用方只看到指向 GORM/driver 内部的文本而找不到根因。
-	if !paginationIntact(res.Statement, noLimit, 0) {
+	// 先判分页子句与投影：被嵌套 scope 截断时 count 查询要么返回 0 行（总数静默为 0）、
+	// 要么直接被数据库拒绝（如只注入 OFFSET 时的 Error 1064）；被 scope 注入去重/分组时
+	// 数据查询去重而统计不去重（总数静默偏大）。两类都以本包的哨兵为主错误，
+	// 避免调用方只看到指向 GORM/driver 内部的文本而找不到根因。
+	if !paginationIntact(res.Statement, noLimit, 0) || projectionOf(res.Statement) != proj {
 		if res.Error != nil {
 			return 0, fmt.Errorf("%w: count total: %w", ErrDeferredPaginationClause, res.Error)
 		}
@@ -392,17 +415,31 @@ func paginationIntact(stmt *gorm.Statement, wantLimit, wantOffset int) bool {
 	return *limit.Limit == wantLimit && limit.Offset == wantOffset
 }
 
-// orderIntact 校验本包的排序列仍完整地排在最前。
+// orderIntact 校验本包设置的排序仍决定最终行序。
 //
-// 嵌套 scope 追加的排序列排在本包之后（不影响行序，本包的主键次级排序已让顺序全序），
-// 故只要前缀仍是本包设置的列即视为完好；用 Reorder 截断本包排序的写法会被这里拦下。
-func orderIntact(stmt *gorm.Statement, want clause.OrderBy) bool {
+// 三个必要条件：
+//   - Expression 必须为 nil。clause.OrderBy.Build 一旦发现 Expression 非 nil 就**完全忽略
+//     Columns**，而它的 MergeClause 会把本包的 Columns 原样复制进对方、只保留对方的
+//     Expression——于是 Columns 看着还是本包的，实际执行的却是对方的表达式
+//     （实测嵌套 scope 注入 clause.OrderBy{Expression: Expr{SQL: "RAND()"}} 后
+//     生成 ORDER BY RAND()，OFFSET 分页因此重复与遗漏）；
+//   - 本包的列必须仍在最前（用 Reorder 截断本包排序的写法会被拦下）；
+//   - exact 为真（受限投影）时不允许任何追加列：DISTINCT / GROUP BY 下追加投影外的列
+//     会被数据库拒绝，且本包此时不追加主键次级排序、行序完全依赖调用方给的那一列。
+//     完整投影下追加列排在本包主键次级排序之后，不影响行序，故放行。
+func orderIntact(stmt *gorm.Statement, want clause.OrderBy, exact bool) bool {
 	c, ok := stmt.Clauses[orderByClauseName]
 	if !ok {
 		return false
 	}
 	got, isOrderBy := c.Expression.(clause.OrderBy)
-	if !isOrderBy || len(got.Columns) < len(want.Columns) {
+	if !isOrderBy || got.Expression != nil {
+		return false
+	}
+	if exact {
+		return slices.Equal(got.Columns, want.Columns)
+	}
+	if len(got.Columns) < len(want.Columns) {
 		return false
 	}
 
@@ -501,21 +538,21 @@ type projection struct {
 	unreliableCount bool
 }
 
-// projectionOf 判定查询投影（构建前可见的形式）。各分支的 Count 可靠性均在
-// 真实 MySQL 上实测过：
-//   - 链式 Distinct（单列 / 多列 / 裸）：Count 生成 COUNT(DISTINCT ...)，可靠；
+// projectionOf 判定查询投影。各分支的 Count 可靠性均在真实 MySQL 上实测过：
+//   - 单列链式 Distinct：Count 生成 count(DISTINCT col)，可靠；多列/裸 Distinct 退化为
+//     count(*)，不可靠（见 distinctCountIsReliable）；
 //   - GROUP BY：Count 返回分组数，可靠；
 //   - Clauses(clause.Select{Distinct}) 与原始字符串 Select("DISTINCT ..."):
 //     Statement.Distinct 为 false，Count 退化为 count(*) 返回总行数，不可靠。
 //
-// Scopes 等延迟机制注入的去重/分组在此看不到（它们在执行阶段才物化）。
-// 后果是自动追加的主键次级排序与投影冲突，被数据库明确拒绝
-// （实测 MySQL Error 1055 / 3065）——是响亮失败而非静默错误结果。
-func projectionOf(tx *gorm.DB) projection {
-	if tx.Statement.Distinct {
-		return projection{restricted: true, unreliableCount: !distinctCountIsReliable(tx.Statement.Selects)}
+// 本函数在语句执行前后各调用一次：Scopes 等延迟机制注入的去重/分组在构建前看不到，
+// 而它们会让「数据查询去重、统计查询不去重」（实测一对多 JOIN + scope 内 Distinct
+// 时总数按 JOIN 后的重复行计数，静默偏大），故执行后要再判一次并比对。
+func projectionOf(stmt *gorm.Statement) projection {
+	if stmt.Distinct {
+		return projection{restricted: true, unreliableCount: !distinctCountIsReliable(stmt.Selects)}
 	}
-	if c, ok := tx.Statement.Clauses[selectClauseName]; ok {
+	if c, ok := stmt.Clauses[selectClauseName]; ok {
 		switch expr := c.Expression.(type) {
 		case clause.Select:
 			if expr.Distinct {
@@ -527,12 +564,16 @@ func projectionOf(tx *gorm.DB) projection {
 			if hasDistinctPrefix(expr.SQL) {
 				return projection{restricted: true, unreliableCount: true}
 			}
+		case clause.NamedExpr:
+			if hasDistinctPrefix(expr.SQL) {
+				return projection{restricted: true, unreliableCount: true}
+			}
 		}
 	}
-	if rawDistinctSelect(tx.Statement.Selects) {
+	if rawDistinctSelect(stmt.Selects) {
 		return projection{restricted: true, unreliableCount: true}
 	}
-	if _, grouped := tx.Statement.Clauses[groupByClauseName]; grouped {
+	if _, grouped := stmt.Clauses[groupByClauseName]; grouped {
 		return projection{restricted: true}
 	}
 
@@ -566,7 +607,12 @@ func hasDistinctPrefix(sql string) bool {
 			continue
 		}
 		rest := lower[len(kw):]
-		if rest == "" || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '(' {
+		if rest == "" || rest[0] == '(' {
+			return true
+		}
+		// 分隔符按 Unicode 空白判定：换行/回车/全角空格等同样是关键字边界
+		// （只判 ' ' 与 '\t' 会让 "DISTINCT\nname" 漏检）
+		if r, _ := utf8.DecodeRuneInString(rest); unicode.IsSpace(r) {
 			return true
 		}
 	}
