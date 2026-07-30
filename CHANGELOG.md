@@ -6,9 +6,19 @@
 
 ## [Unreleased]
 
+## [v1.5.0] - 2026-07-30
+
+**⚠ 破坏性变更**：单列链式 `.Distinct(col)` 分页不再自动统计总数，未提供 `WithTotal` 时返回 `ErrTotalRequired`。v1.4.x 下这类查询会以 `count(DISTINCT col)` 自动统计，但该值排除 NULL、与数据投影保留一个 NULL 的行数不一致，会让总数与页数静默偏小。行为改为显式报错（fail-closed），不再返回可能错误的分页元信息。
+
+迁移：对单列 DISTINCT 分页，自行统计去重行数后经 `WithTotal` 传入，例如 `SELECT COUNT(*) FROM (SELECT DISTINCT col FROM t WHERE …) x`（子查询计数保留 NULL 行，与分页数据一致）；GROUP BY 查询不受影响，仍可自动统计。
+
+### Changed
+
+- `paginator`：所有 DISTINCT 查询现在均要求 `WithTotal`（见上方破坏性变更说明），修复单列可空字段中 `COUNT(DISTINCT col)` 排除 NULL、而数据投影保留一个 NULL，导致总数与页数静默偏小的问题。
+
 ### Fixed
 
-- `paginator`：所有 DISTINCT 查询现在均要求 `WithTotal`，修复单列可空字段中 `COUNT(DISTINCT col)` 排除 NULL、而数据投影保留一个 NULL，导致总数与页数静默偏小的问题；同时修复 `Distinct` 与 `Group` 并存时错误混用分组数量作为去重结果总数。
+- `paginator`：修复 `Distinct` 与 `Group` 并存时错误混用分组数量作为去重结果总数的问题。
 - `paginator`：嵌套 scope 对 ORDER BY、LIMIT、OFFSET、Select、Distinct、Group 或 Raw SQL 的危险改写改为在 SQL 构建前返回 `ErrDeferredPaginationClause`，不再先执行被取消 LIMIT 的无界查询；安全的普通追加排序仅保留在数据查询中，并从 Count 移除。
 - `paginator`：拒绝 `db.Raw(...)` 句柄，修复 GORM 因 `Statement.SQL` 已存在而忽略分页 Clause、却静默返回未分页数据的问题；原始 Select 会跳过前置注释和优化器 hint 后再识别 `DISTINCT`/`DISTINCTROW`。
 - `paginator`：完整拒绝缺少 Config、Dialector、ConnPool、Statement、Statement.DB 或 Context 的部分初始化 GORM 句柄，统一返回 `ErrNilDB`，避免进入 GORM `Session` 或 schema 解析后 panic；文档明确 Scope 调用次数和 `Items` 仅在成功返回时恒非 nil。
