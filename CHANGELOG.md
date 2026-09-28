@@ -2,9 +2,16 @@
 
 本文档记录 `github.com/gtkit/ormx` 的对外可见变更。
 
-格式参考 Keep a Changelog，版本号遵循 Semantic Versioning 2.0.0：`v1` 阶段保持向后兼容，不再引入破坏性变更；确需破坏性变更时按 Go Module 规则发布 `/v2`。（v1.2.0 及更早版本曾按"破坏性变更走 MINOR"的旧策略发布，对应条目保留 **⚠ 破坏性变更** 标注供追溯。）
+格式参考 Keep a Changelog，版本号遵循 Semantic Versioning 2.0.0。本模块只维护 `v1` 主线，不发布新的 major：确需破坏性变更时以 MINOR 版本发布，且只允许 fail-closed 形态（旧的危险行为改为显式报错并在错误信息中指引出路），对应条目顶部以 **⚠ 破坏性变更** 标注并附迁移说明。
 
 ## [Unreleased]
+
+## [v1.5.1] - 2026-09-28
+
+### Fixed
+
+- README 包清单补充 `paginator` 子包，与实际提供的三个包一致。
+- CHANGELOG 版本策略说明与实际执行口径对齐：仅维护 `v1` 主线，破坏性变更以 fail-closed 形态按 MINOR 发布并附迁移说明。
 
 ## [v1.5.0] - 2026-07-30
 

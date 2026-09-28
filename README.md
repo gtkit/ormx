@@ -1,11 +1,12 @@
 # ormx
 
-基于 GORM 的 MySQL 数据访问封装，包含两个包：
+基于 GORM 的 MySQL 数据访问封装，包含三个包：
 
 | 包 | 用途 |
 |----|------|
 | `github.com/gtkit/ormx` | 基于 GORM 的客户端——连接与连接池配置、事务死锁自动重试、单机健康探活与可观测 |
 | `github.com/gtkit/ormx/zlogger` | GORM 的 zap 日志适配——慢查询阈值、trace id 提取、SQL 参数脱敏 |
+| `github.com/gtkit/ormx/paginator` | 通用分页查询执行器——稳定排序、页码与页大小钳制、DISTINCT/GROUP BY 的 fail-closed 契约 |
 
 
 ## 安装
