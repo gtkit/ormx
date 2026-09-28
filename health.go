@@ -94,7 +94,7 @@ func (c *Client) StatsSnapshot() DBStatsSnapshot {
 }
 
 func (c *Client) effectiveName() string {
-	if c != nil && c.config.Name != "" {
+	if c.config.Name != "" {
 		return c.config.Name
 	}
 	return "default"

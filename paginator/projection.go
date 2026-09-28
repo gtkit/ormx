@@ -131,11 +131,14 @@ func cloneProjectionExpression(expr clause.Expression) clause.Expression {
 	}
 }
 
+// countStarSQL 是 GORM Count 在无自定义 Select 时生成的默认统计表达式。
+const countStarSQL = "count(*)"
+
 // expectedCountSelect 复现 GORM v1.31.2 Count 在执行 scope 前生成的 SELECT Clause，
 // 让执行前 guard 能区分 GORM 的正常改写与 scope 对统计投影的再次覆盖。
 func expectedCountSelect(stmt *gorm.Statement) clauseState {
 	if len(stmt.Selects) == 0 {
-		return clauseState{present: true, expression: clause.Expr{SQL: "count(*)"}}
+		return clauseState{present: true, expression: clause.Expr{SQL: countStarSQL}}
 	}
 	if strings.HasPrefix(strings.TrimSpace(strings.ToLower(stmt.Selects[0])), "count(") {
 		return snapshotClause(stmt, selectClauseName)
@@ -147,7 +150,7 @@ func expectedCountSelect(stmt *gorm.Statement) clauseState {
 func expectedCountExpression(stmt *gorm.Statement) clause.Expr {
 	dbName, ok := countColumnName(stmt)
 	if !ok {
-		return clause.Expr{SQL: "count(*)"}
+		return clause.Expr{SQL: countStarSQL}
 	}
 	if stmt.Distinct {
 		return clause.Expr{SQL: "COUNT(DISTINCT(?))", Vars: []any{clause.Column{Name: dbName}}}
@@ -156,7 +159,7 @@ func expectedCountExpression(stmt *gorm.Statement) clause.Expr {
 		return clause.Expr{SQL: "COUNT(?)", Vars: []any{clause.Column{Name: dbName}}}
 	}
 
-	return clause.Expr{SQL: "count(*)"}
+	return clause.Expr{SQL: countStarSQL}
 }
 
 func countColumnName(stmt *gorm.Statement) (string, bool) {

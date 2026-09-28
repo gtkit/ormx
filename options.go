@@ -291,10 +291,7 @@ func WithZlogger(opts ...zlogger.Option) Option {
 // opts 在 logger 注入之后按序应用；默认级别 Warn、慢查询 200ms、参数化查询开启（不记录绑定参数值）。
 func WithZapLogger(zlog *zap.Logger, opts ...zlogger.Option) Option {
 	return func(c *Config) {
-		zopts := make([]zlogger.Option, 0, len(opts)+1)
-		zopts = append(zopts, zlogger.WithLogger(zlog))
-		zopts = append(zopts, opts...)
-		c.GORM.Logger = zlogger.New(zopts...)
+		c.GORM.Logger = zlogger.New(append([]zlogger.Option{zlogger.WithLogger(zlog)}, opts...)...)
 	}
 }
 

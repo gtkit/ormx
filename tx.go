@@ -94,7 +94,8 @@ func (c *Client) WithTx(
 	// 入口统一标准化，保证重试等待、observer 回调等全部下游路径拿到非 nil ctx。
 	ctx = normalizeContext(ctx)
 
-	// 快路径：未传 TxOption 时直接使用编译期默认值，只在死锁时重试，避免额外分配。
+	// 快路径：未传 TxOption 时直接使用编译期默认值，只在死锁时重试，避免额外分配
+	// （opt(&retryOpts) 会让 retryOpts 逃逸到堆，基准实测多 1 次分配）。
 	if len(txOpts) == 0 {
 		return c.withTxRetry(ctx, opts, fn, defaultMaxRetries, defaultRetryBaseWait, defaultRetryMaxWait)
 	}
@@ -163,12 +164,8 @@ func (c *Client) Transaction(ctx context.Context, fn func(tx *gorm.DB) error, tx
 // execTx 执行单次事务尝试。ctx 已在 WithTx 入口标准化，必定非 nil。
 func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error) (err error) {
 	txDB := c.db.WithContext(ctx)
-	var tx *gorm.DB
-	if opts != nil {
-		tx = txDB.Begin(opts)
-	} else {
-		tx = txDB.Begin()
-	}
+	// GORM 的 Begin 对 nil *sql.TxOptions 与不传参等价，无需分支。
+	tx := txDB.Begin(opts)
 	if tx.Error != nil {
 		return fmt.Errorf("ormx: begin tx: %w", tx.Error)
 	}
