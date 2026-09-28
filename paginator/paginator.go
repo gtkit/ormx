@@ -73,8 +73,8 @@
 //   - 行为仅在 MySQL 8 上做过真实数据库验证（见 integration_mysql_test.go）。
 //     其他方言的引号与 DISTINCT/GROUP BY 宽容度不同（如 SQLite 对 ORDER BY 不在
 //     选择列表中更宽容，Postgres 加引号后大小写敏感），使用前请自行验证；
-//   - 仅 OFFSET 分页，深分页（大数据量 × 大页码）不适合高频接口，
-//     此类场景应采用游标分页（不属于本包 API）。
+//   - OFFSET 分页的代价随页码线性增长（数据库扫描并丢弃前 (page-1)*pageSize 行），
+//     高频接口用 WithMaxPageSize 与业务侧页码上限控制深分页开销。
 //
 // 典型用法：
 //

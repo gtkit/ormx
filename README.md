@@ -350,7 +350,7 @@ import "github.com/gtkit/ormx/paginator"
 query := client.DB().WithContext(ctx).
     Model(&Topic{}).
     Where("category_id = ?", cid).
-    Preload("Comments") // 预加载等查询装配直接在句柄上完成，本包不代理
+    Preload("Comments") // 预加载等查询装配在入参句柄上完成，Paginate 原样保留
 
 page, err := paginator.Paginate[Topic](query,
     paginator.Params{Page: 2, PageSize: 20, Sort: "created", Order: "desc"},
@@ -410,7 +410,7 @@ page, err := paginator.Paginate[Topic](
 
 - 未提供显式排序列 → 返回 `ErrSortRequired`，且**不发出任何 SQL**；
 - 提供后该排序列不做表名限定、不追加主键次级排序，与投影的兼容性由调用方保证。
-- 受限投影当前只能表达一个排序列；该列或别名必须能唯一确定结果行。多列 GROUP BY 若不存在唯一单列排序键，不适合使用本分页器，否则相同排序值的行序不稳定。
+- 受限投影下排序只取一列，该列或别名必须能唯一确定结果行序（相同排序值的行序不稳定）；多列 GROUP BY 请提供每组唯一的单列排序键，例如 `MIN(id) AS first_id` 这类聚合别名。
 
 **统计（Count）语义按去重写法区分**，以真实 MySQL 8 实测为准：
 
@@ -434,7 +434,7 @@ page, err := paginator.Paginate[Topic](
 - Count 与数据查询是两条 SQL，**非一致性快照**；严格一致场景请传入事务内句柄。
 - 调用方 Scope 必须是确定且无副作用的查询装配函数：自动 Count 时同一 Scope 执行 **2 次**（Count、数据各一次），`WithTotal(n>0)` 时执行 **1 次**，`WithTotal(0)` 时执行 **0 次**。`time.Now()`、随机值、递增计数器或一次性迭代器应在调用 `Paginate` 前求值并捕获；事务不能修复两次 Scope 生成了不同条件的问题。Scope 只能使用 GORM 公开链式 API 返回查询句柄，不得直接改写 `Statement.Dest`、`Statement.SQL`、`Statement.Clauses` 等内部状态，也不得在 Scope 内执行查询。
 - 自定义 GORM Query callback 不得在 `StatementModifier` 之后改写 ORDER BY、LIMIT、OFFSET 或投影；这类全局 callback 超出单次查询守卫的控制范围。仓库内置代码未注册此类 callback，下游接入 GORM 插件时需自行确认。
-- 仅 OFFSET 分页：深分页（大数据量 × 大页码）不适合高频接口，此类场景应采用游标分页（不属于本包 API）。
+- OFFSET 分页的代价随页码线性增长（数据库扫描并丢弃前 `(page-1)*pageSize` 行）；高频接口用 `WithMaxPageSize` 与业务侧页码上限控制深分页开销。
 - `WithTotal` 传入的总数**不与实际数据核对**：值不准（缓存陈旧、算错）时会静默产出错误页数与空页，准确性由调用方负责。
 - 行为**仅在 MySQL 8 上做过真实数据库验证**。其他方言的引号与 DISTINCT/GROUP BY 宽容度不同（SQLite 对 ORDER BY 不在选择列表中更宽容、Postgres 加引号后大小写敏感），使用前请自行验证。
 

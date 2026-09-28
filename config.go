@@ -40,9 +40,9 @@ var ErrNilSQLDB = errors.New("ormx: nil *sql.DB")
 // Config 通过 With / Clone 返回隔离副本（仅复制包内可变字段），不修改原值。注意普通赋值（cfg2 := cfg）
 // 只是浅拷贝，仍与原值共享 SystemVariables map 与连接池等指针字段；需要独立副本时用 Clone 或 With。
 // Config 是运行期配置，推荐用 Option（Open / NewConfig / With）构建；直接改字段会绕过 Option 的防御逻辑，
-// 合法性由调用方自行保证。它不承诺可整体序列化——仅 MySQL、Pool 带 JSON/YAML 标签，
-// 而 Logger、HealthProbe、TxRetryObserver、NowFunc、NamingStrategy 等运行时字段无法从配置文件映射；
-// 配置文件驱动的场景建议由业务侧维护自己的 DTO，再转换成 ormx.Option。
+// 合法性由调用方自行保证。MySQL 与 Pool 带 JSON/YAML 标签，可直接从配置文件映射；
+// Logger、HealthProbe、TxRetryObserver、NowFunc、NamingStrategy 等运行时字段经 Option 注入。
+// 配置文件驱动的场景由业务侧 DTO 承载这两个子结构，再转换成 ormx.Option。
 // 注意：零值 Config 不携带任何默认值——需要默认值时以 DefaultConfig()（或 NewConfig）的返回值为基底再覆盖字段。
 // Pool 各字段为指针，nil 表示不设置、保持 database/sql 默认。
 type Config struct {
@@ -301,7 +301,7 @@ func (c Config) MustOpen(ctx context.Context) *Client {
 // OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 Config.Pool 中已设置的连接池参数应用到 sqlDB。
 // 打开成功后 Client.Close 不会关闭该外部 *sql.DB（所有权归调用方）。
 // 但注意：若 GORM 初始化（方言初始化/版本探测 SELECT VERSION()）失败，GORM 会调用 sqlDB.Close() 清理，
-// 因此打开失败后不应再复用传入的 *sql.DB——这是 GORM 的行为，本库无法在不引入包装层的前提下规避。
+// 因此打开失败后不应再复用传入的 *sql.DB。
 // 另注意：本方法不修改 Config.MySQL，而外部 *sql.DB 的真实连接地址由调用方决定，
 // 因此返回 Client 的 Config().MySQL 未必反映其真实 DSN。
 func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) {
