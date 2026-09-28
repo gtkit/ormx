@@ -21,3 +21,4 @@ coverage.out
 .vscode/
 .DS_Store
 .Ds_Store
+*.out
