@@ -11,13 +11,15 @@ import (
 type Option func(l *gormLogger)
 
 // WithLogger 设置底层使用的 zap.Logger；传入 nil 时回退为 no-op logger。
+// 注入时关闭 zap 自带的 caller：它只能指向 zlogger 内部的写日志行，
+// SQL 的调用位置由 Trace 日志的 source 字段给出。
 func WithLogger(log *zap.Logger) Option {
 	return func(l *gormLogger) {
 		if log == nil {
 			l.zapLogger = nopLogger
 			return
 		}
-		l.zapLogger = log
+		l.zapLogger = log.WithOptions(zap.WithCaller(false))
 	}
 }
 

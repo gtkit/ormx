@@ -109,15 +109,15 @@ func (l *gormLogger) Trace(
 	switch {
 	case err != nil && l.logLevel >= gormlogger.Error && !recordNotFoundIgnored:
 		sql, rows := fc()
-		fields := l.traceFields(ctx, elapsed, sql, rows)
+		fields := l.traceFields(ctx, elapsed, sql, rows, utils.FileWithLineNum())
 		l.base().Error("gorm query error", append(fields, zap.Error(err))...)
 	case l.slowThreshold != 0 && elapsed > l.slowThreshold && l.logLevel >= gormlogger.Warn:
 		sql, rows := fc()
-		fields := l.traceFields(ctx, elapsed, sql, rows)
+		fields := l.traceFields(ctx, elapsed, sql, rows, utils.FileWithLineNum())
 		l.base().Warn("gorm slow query", append(fields, zap.Duration("slow_threshold", l.slowThreshold))...)
 	case l.logLevel == gormlogger.Info:
 		sql, rows := fc()
-		fields := l.traceFields(ctx, elapsed, sql, rows)
+		fields := l.traceFields(ctx, elapsed, sql, rows, utils.FileWithLineNum())
 		l.base().Info("gorm query", fields...)
 	}
 }
@@ -131,12 +131,16 @@ func (l *gormLogger) ParamsFilter(_ context.Context, sql string, params ...any) 
 	return sql, params
 }
 
-// traceFields builds the common zap fields for a Trace call.
-func (l *gormLogger) traceFields(ctx context.Context, elapsed time.Duration, sql string, rows int64) []zap.Field {
+// traceFields 组装 Trace 日志的公共字段。source 必须由 Trace 在自己的栈帧内取得后传入：
+// GORM 的 FileWithLineNum 按固定跳帧数开始扫描，在这里调用会多一层帧，
+// 扫描在 Trace 处即停、返回 zaplog.go 自身而非业务调用方。
+func (l *gormLogger) traceFields(
+	ctx context.Context, elapsed time.Duration, sql string, rows int64, source string,
+) []zap.Field {
 	const maxTraceFields = 6
 	fields := make([]zap.Field, 0, maxTraceFields)
 	fields = append(fields,
-		zap.String("source", utils.FileWithLineNum()),
+		zap.String("source", source),
 		zap.Duration("elapsed", elapsed),
 		zap.String("sql", sql),
 	)

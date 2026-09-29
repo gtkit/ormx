@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [v1.5.3] - 2026-09-29
+
+### Fixed
+
+- `zlogger`：修复 SQL 日志的 `source` 字段恒指向 zlogger 自身文件、无法定位业务调用位置的问题；经 `WithLogger` 注入的 zap logger 不再输出指向 zlogger 内部的 `caller` 字段，调用位置统一由 `source` 给出。
+
 ## [v1.5.2] - 2026-09-28
 
 ### Changed

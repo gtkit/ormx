@@ -3,6 +3,8 @@ package zlogger_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -387,4 +389,39 @@ func TestWithLoggerNilFallsBackToNop(t *testing.T) {
 		func() (string, int64) { return "SELECT 1", 1 },
 		nil,
 	)
+}
+
+// Trace 的调用位置必须是 GORM 之外的第一个调用方：这里直接调用，source 应指向本测试文件的调用行。
+// 若 FileWithLineNum 再被挪回辅助函数里调用，source 会退化成 zaplog.go 自身，本测试即失败。
+func TestTraceSourcePointsToCaller(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	logger := ormzap.New(ormzap.WithLogger(zap.New(core)), ormzap.WithLogLevel(gormlogger.Info))
+
+	_, file, line, _ := runtime.Caller(0)
+	logger.Trace(context.Background(), time.Now(), func() (string, int64) { return "SELECT 1", 1 }, nil)
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("expected one log entry, got %d", len(entries))
+	}
+	want := fmt.Sprintf("%s:%d", file, line+1)
+	if got := entries[0].ContextMap()["source"]; got != want {
+		t.Fatalf("source = %v, want %s", got, want)
+	}
+}
+
+// 注入开启了 AddCaller 的 zap logger 时，输出不得携带 zap 自带的 caller（它只会指向 zaplog.go）。
+func TestWithLoggerDisablesZapCaller(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	logger := ormzap.New(ormzap.WithLogger(zap.New(core, zap.AddCaller())), ormzap.WithLogLevel(gormlogger.Info))
+
+	logger.Trace(context.Background(), time.Now(), func() (string, int64) { return "SELECT 1", 1 }, nil)
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("expected one log entry, got %d", len(entries))
+	}
+	if entries[0].Caller.Defined {
+		t.Fatalf("expected zap caller disabled, got %s", entries[0].Caller)
+	}
 }
