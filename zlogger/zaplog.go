@@ -1,6 +1,7 @@
 // Package zlogger 提供基于 zap 的 GORM 日志适配器，
 // 实现 gorm.io/gorm/logger 的 Interface，支持慢查询阈值、
-// 日志级别、忽略 ErrRecordNotFound、参数化 SQL 以及 trace ID 关联等配置。
+// 日志级别、忽略 ErrRecordNotFound、参数化 SQL 以及 trace ID 关联等配置；
+// 经 Use 一步接入 ormx。
 package zlogger
 
 import (
@@ -11,7 +12,6 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
-	"gorm.io/gorm/utils"
 )
 
 const slowTime = 200 * time.Millisecond
@@ -67,28 +67,28 @@ func (l *gormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 	return &clone
 }
 
-// Info 在日志级别不低于 Info 时按 Printf 风格输出 Info 日志。
+// Info 在日志级别不低于 Info 时按 Printf 风格输出 Info 日志，附带 source 调用位置。
 func (l *gormLogger) Info(ctx context.Context, msg string, data ...any) {
 	if l.logLevel < gormlogger.Info {
 		return
 	}
-	l.getSugar(ctx).Infof(msg, data...)
+	l.getSugar(ctx).With("source", callerSource()).Infof(msg, data...)
 }
 
-// Warn 在日志级别不低于 Warn 时按 Printf 风格输出 Warn 日志。
+// Warn 在日志级别不低于 Warn 时按 Printf 风格输出 Warn 日志，附带 source 调用位置。
 func (l *gormLogger) Warn(ctx context.Context, msg string, data ...any) {
 	if l.logLevel < gormlogger.Warn {
 		return
 	}
-	l.getSugar(ctx).Warnf(msg, data...)
+	l.getSugar(ctx).With("source", callerSource()).Warnf(msg, data...)
 }
 
-// Error 在日志级别不低于 Error 时按 Printf 风格输出 Error 日志。
+// Error 在日志级别不低于 Error 时按 Printf 风格输出 Error 日志，附带 source 调用位置。
 func (l *gormLogger) Error(ctx context.Context, msg string, data ...any) {
 	if l.logLevel < gormlogger.Error {
 		return
 	}
-	l.getSugar(ctx).Errorf(msg, data...)
+	l.getSugar(ctx).With("source", callerSource()).Errorf(msg, data...)
 }
 
 // Trace 记录一次 SQL 执行：出错时（除被忽略的 gorm.ErrRecordNotFound 外）输出 Error 日志；
@@ -109,15 +109,15 @@ func (l *gormLogger) Trace(
 	switch {
 	case err != nil && l.logLevel >= gormlogger.Error && !recordNotFoundIgnored:
 		sql, rows := fc()
-		fields := l.traceFields(ctx, elapsed, sql, rows, utils.FileWithLineNum())
+		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.base().Error("gorm query error", append(fields, zap.Error(err))...)
 	case l.slowThreshold != 0 && elapsed > l.slowThreshold && l.logLevel >= gormlogger.Warn:
 		sql, rows := fc()
-		fields := l.traceFields(ctx, elapsed, sql, rows, utils.FileWithLineNum())
+		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.base().Warn("gorm slow query", append(fields, zap.Duration("slow_threshold", l.slowThreshold))...)
 	case l.logLevel == gormlogger.Info:
 		sql, rows := fc()
-		fields := l.traceFields(ctx, elapsed, sql, rows, utils.FileWithLineNum())
+		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.base().Info("gorm query", fields...)
 	}
 }
@@ -131,16 +131,12 @@ func (l *gormLogger) ParamsFilter(_ context.Context, sql string, params ...any) 
 	return sql, params
 }
 
-// traceFields 组装 Trace 日志的公共字段。source 必须由 Trace 在自己的栈帧内取得后传入：
-// GORM 的 FileWithLineNum 按固定跳帧数开始扫描，在这里调用会多一层帧，
-// 扫描在 Trace 处即停、返回 zaplog.go 自身而非业务调用方。
-func (l *gormLogger) traceFields(
-	ctx context.Context, elapsed time.Duration, sql string, rows int64, source string,
-) []zap.Field {
+// traceFields 组装 Trace 日志的公共字段。
+func (l *gormLogger) traceFields(ctx context.Context, elapsed time.Duration, sql string, rows int64) []zap.Field {
 	const maxTraceFields = 6
 	fields := make([]zap.Field, 0, maxTraceFields)
 	fields = append(fields,
-		zap.String("source", source),
+		zap.String("source", callerSource()),
 		zap.Duration("elapsed", elapsed),
 		zap.String("sql", sql),
 	)

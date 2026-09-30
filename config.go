@@ -208,7 +208,7 @@ func DefaultConfig() Config {
 		},
 		GORM: GORMConfig{
 			// 默认静默：库不隐式向 stdout 输出 SQL 或泄露绑定参数，
-			// 需要日志时用 WithZlogger / WithGormLogger 显式开启。
+			// 需要日志时用 WithGormLogger（接 zap 用子包的 zlogger.Use）显式开启。
 			Logger:         gormlogger.Discard,
 			NamingStrategy: defaultNamingStrategy(),
 		},

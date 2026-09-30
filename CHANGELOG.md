@@ -6,6 +6,26 @@
 
 ## [Unreleased]
 
+## [v1.6.0] - 2026-09-30
+
+**⚠ 破坏性变更**：根包移除 `WithZlogger` 与 `WithZapLogger`，根包不再依赖 zap。旧写法编译报错 `undefined: ormx.WithZapLogger` / `undefined: ormx.WithZlogger`，属响亮失败；zap 接入改由子包 `zlogger.Use` 提供。本次为一次性清理，理由是这两个入口把 zap 固化为所有根包消费者的编译依赖，不作为移除未使用导出的先例。
+
+迁移：`ormx.WithZapLogger(zl, opts...)` 改为 `zlogger.Use(zl, opts...)`；`ormx.WithZlogger(opts...)` 改为 `ormx.WithGormLogger(zlogger.New(opts...))`。既有的 `ormx.WithGormLogger(zlogger.New(...))` 写法不受影响。
+
+### Added
+
+- `zlogger.Use(zlog, opts...)`：返回把 zap logger 接入 ormx 的 `ormx.Option`，等价 `ormx.WithGormLogger(zlogger.New(zlogger.WithLogger(zlog), opts...))`；`nil` 回退 no-op，附加 Option 在其后按序生效。
+
+### Removed
+
+- 根包 `WithZlogger`、`WithZapLogger`（见上方破坏性变更）。只引用根包的项目，其二进制与 go.mod 不再含 zap。
+
+### Fixed
+
+- `zlogger`：GORM 经 Info / Warn / Error 输出的非 SQL 消息（初始化失败、迁移警告、回调注册等）现在附带 `source` 调用位置，与 SQL 日志一致；此前这些消息没有任何位置信息。
+- `zlogger`：`source` 现在跳过 ormx 自身的包装层——经 `paginator.Paginate` 发出的 SQL 定位到业务代码调用 `Paginate` 的位置，此前指向 `paginator/paginator.go` 内部行号。
+- `zlogger`：嵌套事务在 panic 展开中执行的 `ROLLBACK TO SAVEPOINT`，其 `source` 现在定位到业务代码的 panic 处，此前指向 `runtime/panic.go`。
+
 ## [v1.5.3] - 2026-09-29
 
 ### Fixed

@@ -117,9 +117,7 @@ client, err := ormx.Open(ctx,
 
 | Option | 默认值 | 说明 |
 |--------|--------|------|
-| `WithGormLogger(log)` | `Discard`（静默） | 设置任意 `gormlogger.Interface` 实现；默认静默，不输出任何 SQL 日志 |
-| `WithZlogger(opts...)` | 无参为 no-op（静默） | 一步注入 zap 日志器，等价 `WithGormLogger(zlogger.New(opts...))`；不传 Option 时用 zlogger 默认（no-op logger，静默丢弃），须至少 `zlogger.WithLogger(...)` 注入 zap。详见下文 zlogger 章节 |
-| `WithZapLogger(zlog, opts...)` | — | 直传 `*zap.Logger` 一步接入，等价 `WithZlogger(zlogger.WithLogger(zlog), opts...)`（接 zap 的最短路径）；`nil` 回退 no-op，附加 `zlogger.Option` 在其后按序生效 |
+| `WithGormLogger(log)` | `Discard`（静默） | 设置任意 `gormlogger.Interface` 实现；默认静默，不输出任何 SQL 日志。接 zap 用子包的 `zlogger.Use(zlog, opts...)`，详见下文 zlogger 章节 |
 | `WithPrepareStmt(enabled)` | `false` | 开启预编译语句缓存。默认关闭；适合长生命周期单例 Client，**不要频繁 Open/Close**（GORM 的 TTL 缓存清理 goroutine 不随 `Close` 退出，`Close` 仅释放已缓存语句） |
 | `WithPrepareStmtCache(maxSize, ttl)` | GORM 默认 | 预编译语句缓存容量与 TTL，**仅在 `WithPrepareStmt(true)` 时生效**；不设置时沿用 GORM 的缓存默认 |
 | `WithSkipDefaultTransaction(skip)` | `false` | 跳过 GORM 单条写操作的默认事务 |
@@ -181,7 +179,7 @@ ormx.WithGormLogger(gormlogger.Default.LogMode(gormlogger.Info))
 | 方法 | 说明 |
 |------|------|
 | `DB() *gorm.DB` | 取 GORM 句柄 |
-| `SQLDB() *sql.DB` | 取底层 `*sql.DB`（可交给 [jetx](https://github.com/gtkit/jetx) 等共享连接池） |
+| `SQLDB() *sql.DB` | 取底层 `*sql.DB` |
 | `Config() Config` | 配置的脱敏快照（隔离副本，密码/参数值/连接属性已脱敏，不含明文凭据） |
 | `Name() string` | 实例名（未设置时为 `default`） |
 | `PingContext(ctx) error` | 连通性检查 |
@@ -277,42 +275,35 @@ if _, err := ormx.Open(ctx, /* ...缺少地址... */); errors.Is(err, ormx.ErrAd
 
 ## zlogger（GORM 的 zap 日志适配）
 
-`zlogger` 是实现 `gormlogger.Interface` 的 zap 日志器。用 `ormx.WithZapLogger` 直传 `*zap.Logger` 一步接入：
+`zlogger` 是实现 `gormlogger.Interface` 的 zap 日志器；根包只依赖 GORM 与 MySQL 驱动，zap 仅随本子包引入。用 `zlogger.Use` 直传 `*zap.Logger` 一步接入：
 
 ```go
 import (
+    "github.com/gtkit/logger/v2"
     "github.com/gtkit/ormx"
     "github.com/gtkit/ormx/zlogger"
     gormlogger "gorm.io/gorm/logger"
-    "go.uber.org/zap"
 )
-
-zlog, _ := zap.NewProduction()
 
 client, err := ormx.Open(ctx,
     // ...连接选项...
-    ormx.WithZapLogger(zlog,
+    zlogger.Use(logger.Default().Zap(),
         zlogger.WithLogLevel(gormlogger.Warn),
         zlogger.WithSlowThreshold(300*time.Millisecond),
         zlogger.WithIgnoreRecordNotFoundError(true),
         zlogger.WithParameterizedQueries(true),
-        zlogger.WithTraceIDExtractor(func(ctx context.Context) string {
-            if id, ok := ctx.Value("X-Request-ID").(string); ok {
-                return id
-            }
-            return ""
-        }),
+        zlogger.WithTraceIDExtractor(logger.RequestIDFromContext),
     ),
 )
 ```
 
-`WithZapLogger(zlog, opts...)` 等价于 `WithZlogger(zlogger.WithLogger(zlog), opts...)`，后者（`WithZlogger(opts...)` ≙ `WithGormLogger(zlogger.New(opts...))`）适合 Option 完全由外部组装的场景。需要注入自定义 `gormlogger.Interface` 实现（或已构造好的日志器）时，仍用 `WithGormLogger`。
+`zlogger.Use(zlog, opts...)` 返回 `ormx.Option`，等价于 `ormx.WithGormLogger(zlogger.New(zlogger.WithLogger(zlog), opts...))`：`zlog` 为 `nil` 回退 no-op，附加 `zlogger.Option` 在其后按序生效。Option 完全由外部组装时写 `ormx.WithGormLogger(zlogger.New(opts...))`；需要注入自定义 `gormlogger.Interface` 实现（或已构造好的日志器）时，用 `WithGormLogger`。
 
 多个数据库共享同一日志器时，建议给各实例的 zap logger 显式附加区分字段：
 
 ```go
 ormx.WithName("orders"),
-ormx.WithZapLogger(zlog.With(zap.String("database", "orders"))),
+zlogger.Use(zlog.With(zap.String("database", "orders"))),
 ```
 
 ### 选项函数
@@ -328,11 +319,13 @@ ormx.WithZapLogger(zlog.With(zap.String("database", "orders"))),
 
 ### 输出行为
 
-每条 SQL 日志包含字段：`source`（调用位置）、`elapsed`（耗时）、`sql`、`rows`（影响行数，-1 时省略）、`trace_id`（配置了 extractor 且能提取到时）。按以下优先级输出：
+每条 SQL 日志包含字段：`source`（调用位置：跳过 GORM、ormx、gorm/gen 生成的 `*.gen.go` 与 Go runtime 之后的第一个调用方；经 `paginator` 等本库包装层发出的查询同样定位到业务代码，嵌套事务在 panic 展开中执行的 `ROLLBACK TO SAVEPOINT` 定位到业务的 panic 处）、`elapsed`（耗时）、`sql`、`rows`（影响行数，-1 时省略）、`trace_id`（配置了 extractor 且能提取到时）。按以下优先级输出：
 
 1. 执行出错（且未被 RecordNotFound 忽略）→ `Error` 级 `gorm query error`，附 `error` 字段
 2. 耗时超过慢查询阈值 → `Warn` 级 `gorm slow query`，附 `slow_threshold` 字段
 3. 日志级别为 Info → `Info` 级 `gorm query`（全量 SQL 日志，仅建议开发环境开启）
+
+GORM 经 Info / Warn / Error 输出的非 SQL 消息（初始化失败、迁移警告、回调注册等）同样附带 `source` 与 `trace_id`，`source` 指向触发该操作的业务代码位置。
 
 `LogMode` 遵循 GORM 约定返回调级别后的副本，可配合 `db.Session(&gorm.Session{Logger: ...})` 做局部调级。
 

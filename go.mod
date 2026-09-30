@@ -1,9 +1,9 @@
 module github.com/gtkit/ormx
 
-go 1.26
+go 1.26.0
 
 require (
-	github.com/go-sql-driver/mysql v1.10.0
+	github.com/go-sql-driver/mysql v1.10.1
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gorm v1.31.2
@@ -15,5 +15,5 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gtkit/ormx"
 	"github.com/gtkit/ormx/zlogger"
 
+	"go.uber.org/zap"
 	gormlogger "gorm.io/gorm/logger"
 )
 
@@ -17,5 +19,16 @@ func ExampleNew() {
 	)
 
 	fmt.Println(log != nil)
+	// Output: true
+}
+
+// Use 直传 *zap.Logger 一步接入 ormx，
+// 等价于 ormx.WithGormLogger(zlogger.New(zlogger.WithLogger(zlog), opts...))。
+func ExampleUse() {
+	cfg := ormx.NewConfig(
+		zlogger.Use(zap.NewNop(), zlogger.WithSlowThreshold(300*time.Millisecond)),
+	)
+
+	fmt.Println(cfg.GORM.Logger != nil)
 	// Output: true
 }

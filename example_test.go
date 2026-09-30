@@ -2,13 +2,8 @@ package ormx_test
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/gtkit/ormx"
-	"github.com/gtkit/ormx/zlogger"
-
-	"go.uber.org/zap"
-	gormlogger "gorm.io/gorm/logger"
 )
 
 // 用 Functional Options 构建配置，并通过 RedactedDSN 输出密码脱敏后的
@@ -27,21 +22,6 @@ func ExampleNewConfig() {
 	}
 	fmt.Println(dsn)
 	// Output: alice:******@tcp(127.0.0.1:3306)/app?loc=Local&parseTime=true&readTimeout=30s&timeout=10s&writeTimeout=30s
-}
-
-// WithZlogger 一步注入 GORM SQL 日志器，无需显式调用 zlogger.New，
-// 等价于 WithGormLogger(zlogger.New(opts...))。
-func ExampleWithZlogger() {
-	cfg := ormx.NewConfig(
-		ormx.WithZlogger(
-			zlogger.WithLogger(zap.NewNop()),
-			zlogger.WithLogLevel(gormlogger.Info),
-			zlogger.WithIgnoreRecordNotFoundError(true),
-		),
-	)
-
-	fmt.Println(cfg.GORM.Logger != nil)
-	// Output: true
 }
 
 // WithCharset 一行设置连接字符集，连接建立后驱动执行 SET NAMES <charset>
@@ -78,17 +58,6 @@ func ExampleWithDSN() {
 	}
 	fmt.Println(dsn)
 	// Output: alice:******@tcp(db.internal:3307)/app?charset=utf8mb4&parseTime=true
-}
-
-// WithZapLogger 直传 *zap.Logger 一步接入 SQL 日志，
-// 等价于 WithZlogger(zlogger.WithLogger(zlog), opts...)。
-func ExampleWithZapLogger() {
-	cfg := ormx.NewConfig(
-		ormx.WithZapLogger(zap.NewNop(), zlogger.WithSlowThreshold(300*time.Millisecond)),
-	)
-
-	fmt.Println(cfg.GORM.Logger != nil)
-	// Output: true
 }
 
 // With 返回应用新 Option 后的隔离副本，原配置不受影响

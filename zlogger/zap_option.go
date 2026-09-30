@@ -59,14 +59,9 @@ func WithParameterizedQueries(enabled bool) Option {
 // WithTraceIDExtractor 设置从 context 提取 trace/request ID 的函数。
 // 提取到的 ID 会作为 "trace_id" 字段附加到每条日志，用于串联 SQL 日志与请求链路。
 //
-// 示例：
+// 示例（接 gtkit/logger v2 的请求 ID）：
 //
-//	WithTraceIDExtractor(func(ctx context.Context) string {
-//	    if id, ok := ctx.Value("X-Request-ID").(string); ok {
-//	        return id
-//	    }
-//	    return ""
-//	})
+//	WithTraceIDExtractor(logger.RequestIDFromContext)
 func WithTraceIDExtractor(fn TraceIDExtractor) Option {
 	return func(l *gormLogger) {
 		l.traceIDExtractor = fn

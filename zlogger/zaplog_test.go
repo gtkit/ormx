@@ -391,8 +391,8 @@ func TestWithLoggerNilFallsBackToNop(t *testing.T) {
 	)
 }
 
-// Trace 的调用位置必须是 GORM 之外的第一个调用方：这里直接调用，source 应指向本测试文件的调用行。
-// 若 FileWithLineNum 再被挪回辅助函数里调用，source 会退化成 zaplog.go 自身，本测试即失败。
+// Trace 的调用位置必须是 GORM 与 ormx 之外的第一个调用方：这里直接从 _test.go 调用，source 应指向本文件的调用行。
+// 若跳帧判定失效（如把 zlogger 自身的帧放行），source 会退化成 zaplog.go 自身，本测试即失败。
 func TestTraceSourcePointsToCaller(t *testing.T) {
 	core, logs := observer.New(zap.DebugLevel)
 	logger := ormzap.New(ormzap.WithLogger(zap.New(core)), ormzap.WithLogLevel(gormlogger.Info))
@@ -423,5 +423,31 @@ func TestWithLoggerDisablesZapCaller(t *testing.T) {
 	}
 	if entries[0].Caller.Defined {
 		t.Fatalf("expected zap caller disabled, got %s", entries[0].Caller)
+	}
+}
+
+// Info/Warn/Error 与 Trace 同样要求 source 指向 GORM 与 ormx 之外的第一个调用方：
+// 这里直接从 _test.go 调用，source 应为本文件的调用行；跳帧判定失效时本测试即失败。
+func TestInfoWarnErrorSourcePointsToCaller(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	logger := ormzap.New(ormzap.WithLogger(zap.New(core, zap.AddCaller())), ormzap.WithLogLevel(gormlogger.Info))
+
+	_, file, line, _ := runtime.Caller(0)
+	logger.Info(context.Background(), "info %s", "x")
+	logger.Warn(context.Background(), "warn %s", "x")
+	logger.Error(context.Background(), "error %s", "x")
+
+	entries := logs.All()
+	if len(entries) != 3 {
+		t.Fatalf("expected three log entries, got %d", len(entries))
+	}
+	for i, entry := range entries {
+		want := fmt.Sprintf("%s:%d", file, line+1+i)
+		if got := entry.ContextMap()["source"]; got != want {
+			t.Fatalf("entry %d source = %v, want %s", i, got, want)
+		}
+		if entry.Caller.Defined {
+			t.Fatalf("entry %d must not carry zap caller, got %s", i, entry.Caller)
+		}
 	}
 }

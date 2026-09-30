@@ -80,7 +80,7 @@ linters:
         - module: github.com/gofrs/uuid
           recommendations:
             - github.com/google/uuid
-          reason: 'see recommendation from dev-infra team: https://confluence.gtforge.com/x/gQI6Aw'
+          reason: 统一使用 github.com/google/uuid
     govet:
       disable:
         - fieldalignment
