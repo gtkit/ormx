@@ -486,6 +486,8 @@ GROUP BY 自动统计保留投影别名，因此 `Select("category_id, COUNT(*) 
 
 ### 测试
 
+CI 固定使用 golangci-lint `v2.15.0`；本地运行 lint 时请使用相同版本，以匹配 `.golangci.yml` 的规则与配置格式。
+
 真实 MySQL 集成测试是**发布前置条件**（`make tag` 强制执行）——fake driver 只能验 SQL 形状，DISTINCT / `ONLY_FULL_GROUP_BY` / 保留字 / Join 同名列这几类只有真实数据库能判定：
 
 ```bash
