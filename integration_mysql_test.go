@@ -39,6 +39,34 @@ func TestIntegrationOpenAndQueryRealMySQL(t *testing.T) {
 	}
 }
 
+func TestIntegrationBorrowedPoolAfterStartupCancellation(t *testing.T) {
+	h := newIntegrationMySQLHarness(t)
+	owner := h.openClient(t, "borrowed")
+	ctx, cancel := context.WithCancel(t.Context())
+	client, err := OpenWithDB(ctx, owner.SQLDB(), WithPrepareStmt(true))
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	underlying, err := client.DB().DB()
+	if err != nil || underlying != owner.SQLDB() {
+		t.Fatalf("borrowed pool was not restored: %v", err)
+	}
+	var got int
+	if txErr := client.Transaction(t.Context(), func(tx *gorm.DB) error {
+		return tx.Raw("SELECT ?", 42).Scan(&got).Error
+	}); txErr != nil || got != 42 {
+		t.Fatalf("prepared transaction: got=%d err=%v", got, txErr)
+	}
+	if closeErr := client.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if pingErr := owner.PingContext(t.Context()); pingErr != nil {
+		t.Fatalf("borrowed close affected owner: %v", pingErr)
+	}
+}
+
 func TestIntegrationSystemVariableTakesEffect(t *testing.T) {
 	h := newIntegrationMySQLHarness(t)
 	cfg := h.newConfig(t, "sysvar").With(WithSystemVariable("time_zone", "'+00:00'"))

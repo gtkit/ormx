@@ -2,6 +2,7 @@ package ormx_test
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/gtkit/ormx"
 )
@@ -68,4 +69,34 @@ func ExampleConfig_With() {
 
 	fmt.Println(base.Name, derived.Name)
 	// Output: base derived
+}
+
+// 数值仅用于展示配置；容量与超时应按部署环境确认。本例不连接数据库。
+func ExampleNewConfig_production() {
+	cfg := ormx.NewConfig(
+		ormx.WithName("orders"),
+		ormx.WithHost("mysql.internal"),
+		ormx.WithDatabase("orders"),
+		ormx.WithUser("orders_app"),
+		ormx.WithPassword("<injected-password>"),
+		ormx.WithTLSConfig("true"),
+		ormx.WithLocation(time.UTC),
+		ormx.WithSystemVariable("time_zone", "'+00:00'"),
+		ormx.WithTimeout(3*time.Second),
+		ormx.WithReadTimeout(5*time.Second),
+		ormx.WithWriteTimeout(5*time.Second),
+		ormx.WithDefaultContextTimeout(2*time.Second),
+		ormx.WithDefaultTransactionTimeout(5*time.Second),
+		ormx.WithMaxOpenConns(20),
+		ormx.WithMaxIdleConns(10),
+		ormx.WithConnMaxLifetime(3*time.Minute),
+		ormx.WithConnMaxIdleTime(time.Minute),
+	)
+	fmt.Println(cfg.MySQL.TLSConfig, cfg.MySQL.Loc)
+	fmt.Println(cfg.GORM.DefaultContextTimeout, cfg.GORM.DefaultTransactionTimeout)
+	fmt.Println(*cfg.Pool.MaxOpenConns, *cfg.Pool.MaxIdleConns)
+	// Output:
+	// true UTC
+	// 2s 5s
+	// 20 10
 }

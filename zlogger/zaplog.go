@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -110,7 +111,7 @@ func (l *gormLogger) Trace(
 	case err != nil && l.logLevel >= gormlogger.Error && !recordNotFoundIgnored:
 		sql, rows := fc()
 		fields := l.traceFields(ctx, elapsed, sql, rows)
-		l.base().Error("gorm query error", append(fields, zap.Error(err))...)
+		l.base().Error("gorm query error", append(fields, l.errorFields(err)...)...)
 	case l.slowThreshold != 0 && elapsed > l.slowThreshold && l.logLevel >= gormlogger.Warn:
 		sql, rows := fc()
 		fields := l.traceFields(ctx, elapsed, sql, rows)
@@ -120,6 +121,37 @@ func (l *gormLogger) Trace(
 		fields := l.traceFields(ctx, elapsed, sql, rows)
 		l.base().Info("gorm query", fields...)
 	}
+}
+
+// errorFields 在参数化模式下只输出固定摘要与错误码，避免数据库错误回显绑定值。
+func (l *gormLogger) errorFields(err error) []zap.Field {
+	if !l.parameterizedQueries {
+		return []zap.Field{zap.Error(err)}
+	}
+	if mysqlErr, ok := errors.AsType[*mysqldriver.MySQLError](err); ok && mysqlErr != nil {
+		fields := []zap.Field{
+			zap.String("error", "mysql error (details redacted)"),
+			zap.Uint16("mysql_code", mysqlErr.Number),
+		}
+		if mysqlErr.SQLState != [5]byte{} {
+			fields = append(fields, zap.String("mysql_sqlstate", string(mysqlErr.SQLState[:])))
+		}
+		return fields
+	}
+	message := "database error (details redacted)"
+	switch {
+	case errors.Is(err, context.Canceled):
+		message = "context canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		message = "context deadline exceeded"
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		message = "record not found"
+	case errors.Is(err, gorm.ErrDuplicatedKey):
+		message = "duplicated key"
+	case errors.Is(err, gorm.ErrForeignKeyViolated):
+		message = "foreign key violated"
+	}
+	return []zap.Field{zap.String("error", message)}
 }
 
 // ParamsFilter 实现 GORM 的参数过滤钩子：启用参数化查询（WithParameterizedQueries）时

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	integrationRunEnv = "ORM_RUN_INTEGRATION"
-	integrationDSNEnv = "ORM_TEST_DSN"
+	integrationRunEnv     = "ORM_RUN_INTEGRATION"
+	integrationDSNEnv     = "ORM_TEST_DSN"
+	integrationRequireEnv = "ORM_REQUIRE_INTEGRATION"
 )
 
 type integrationMySQLHarness struct {
@@ -26,11 +27,17 @@ func newIntegrationMySQLHarness(t *testing.T) *integrationMySQLHarness {
 	t.Helper()
 
 	if os.Getenv(integrationRunEnv) != "1" {
+		if os.Getenv(integrationRequireEnv) == "1" {
+			t.Fatalf("%s=1 requires %s=1", integrationRequireEnv, integrationRunEnv)
+		}
 		t.Skipf("set %s=1 to run integration tests", integrationRunEnv)
 	}
 
 	rawDSN := os.Getenv(integrationDSNEnv)
 	if rawDSN == "" {
+		if os.Getenv(integrationRequireEnv) == "1" {
+			t.Fatalf("%s=1 requires %s", integrationRequireEnv, integrationDSNEnv)
+		}
 		t.Skipf("set %s to a MySQL DSN without a fixed schema, e.g. root:root@tcp(127.0.0.1:3306)/", integrationDSNEnv)
 	}
 

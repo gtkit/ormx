@@ -48,10 +48,9 @@
 //   - 所有 DISTINCT 都必须经 [WithTotal] 提供总数。即使是单列链式 Distinct，
 //     GORM 生成的 count(DISTINCT col) 也会排除 NULL，而 SELECT DISTINCT col 会保留
 //     一个 NULL；多列及原始写法还可能退化为 count(*)，均不能自动承诺准确；
-//   - GROUP BY（链式 Group 或 clause.GroupBy）：GORM 取统计查询的返回行数作为总数
-//     （见 gorm finisher_api.go 中 *count = tx.RowsAffected），即分组数量，可自动统计。
-//     代价是每个分组返回一行：统计开销为 O(分组数) 的网络传输与扫描，
-//     高基数分组（几十万以上）请改用 [WithTotal] 自行统计。
+//   - GROUP BY（链式 Group 或 clause.GroupBy）：保留投影、分组与 HAVING 作为派生表，
+//     外层 COUNT 统计结果行数，支持投影别名。统计只返回一行，数据库仍需完成内部聚合；
+//     代价依赖索引、分组数量与执行计划，重查询可用 [WithTotal] 自行提供总数。
 //
 // 本包在构建前记录 Distinct、Selects、SELECT Clause 与 GROUP BY Clause，全部 scope
 // 执行完成后、SQL 构建前再次比对。Scopes 里改变 Select/Distinct/Group 会返回
@@ -93,6 +92,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 const (
@@ -251,7 +251,7 @@ func WithSortMapping(m map[string]string) Option {
 }
 
 // WithTotal 由调用方提供总数并跳过 count 查询：适用于总数已缓存、count 过重、
-// 默认 Count 语义不符合需求，或高基数 GROUP BY（自动统计需拉回 O(分组数) 行）的场景。
+// 默认 Count 语义不符合需求，或 GROUP BY 聚合代价过高的场景。
 // 所有 DISTINCT 查询均必须提供本项（见 [ErrTotalRequired]）；GROUP BY 可自动统计。
 // total 不得为负。
 func WithTotal(total int64) Option {
@@ -309,7 +309,10 @@ func Paginate[T any](db *gorm.DB, params Params, opts ...Option) (Page[T], error
 
 	pageSize := clampPageSize(params.PageSize, s.maxPageSize)
 
-	total, err := resolveTotal(tx, &s, proj)
+	// 不按 pageSize 预分配，避免极值吃内存；同一目标用于统计与数据查询，
+	// 避免非零 Model 被 GORM 当作单行查询条件。
+	items := []T{}
+	total, err := resolveTotal(tx, &s, proj, &items)
 	if err != nil {
 		return Page[T]{}, err
 	}
@@ -327,8 +330,6 @@ func Paginate[T any](db *gorm.DB, params Params, opts ...Option) (Page[T], error
 		return result, nil
 	}
 
-	// 不按 pageSize 预分配：容量来自可配输入，极值会 panic 或吃内存（Find 自增长即可）
-	items := []T{}
 	offset := (page - 1) * pageSize
 	guard := &statementGuard{
 		dest:       &items,
@@ -370,14 +371,17 @@ func privateSession(db *gorm.DB) *gorm.DB {
 }
 
 // resolveTotal 决定总条数：WithTotal 优先；Count 语义不可靠的去重写法必须显式提供；
-// 其余走 GORM Count——经尾随 scope 在调用方 scope 之后清除排序与分页子句，
+// 分组查询统计保留投影的派生表，其余走 GORM Count；尾随 scope 清除排序与分页子句，
 // 保证统计不被截断。
-func resolveTotal(tx *gorm.DB, s *settings, proj projection) (int64, error) {
+func resolveTotal(tx *gorm.DB, s *settings, proj projection, dest any) (int64, error) {
 	if s.total != nil {
 		return *s.total, nil
 	}
 	if proj.unreliableCount {
 		return 0, ErrTotalRequired
+	}
+	if proj.groupClause.present {
+		return resolveGroupedTotal(tx, proj, dest)
 	}
 
 	var total int64
@@ -401,6 +405,30 @@ func resolveTotal(tx *gorm.DB, s *settings, proj projection) (int64, error) {
 		return 0, fmt.Errorf("paginator: count total: %w", res.Error)
 	}
 
+	return total, nil
+}
+
+// resolveGroupedTotal 保留 SELECT 别名和 HAVING，由外层 COUNT 统计分组结果行数。
+// 内层只构建 SQL，不扫描数据、不输出伪执行日志；scope 仍仅在统计阶段执行一次。
+func resolveGroupedTotal(tx *gorm.DB, proj projection, dest any) (int64, error) {
+	guard := &statementGuard{dest: dest, projection: proj, mode: guardGroupedCount}
+	inner := tx.Session(&gorm.Session{DryRun: true, Logger: gormlogger.Discard}).
+		Scopes(stripPaginationScope(guard)).Find(dest)
+	if !guard.applied {
+		if inner.Error != nil {
+			return 0, fmt.Errorf("%w: build grouped count: %w", ErrDeferredPaginationClause, inner.Error)
+		}
+		return 0, ErrDeferredPaginationClause
+	}
+	if inner.Error != nil {
+		return 0, fmt.Errorf("paginator: build grouped count: %w", inner.Error)
+	}
+
+	var total int64
+	result := tx.Session(&gorm.Session{NewDB: true}).Table("(?) AS ormx_groups", inner).Count(&total)
+	if result.Error != nil {
+		return 0, fmt.Errorf("paginator: count grouped total: %w", result.Error)
+	}
 	return total, nil
 }
 

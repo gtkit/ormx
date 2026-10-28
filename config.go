@@ -263,9 +263,8 @@ func clonePtr[T any](p *T) *T {
 // Open 按当前配置构建 MySQL 连接器并打开 *sql.DB，应用连接池配置后初始化 GORM，
 // 返回拥有该 *sql.DB 所有权的 Client（Close 时会一并关闭）。
 // 若 StartupPing 开启，会先按重试策略 Ping 数据库；任一步骤失败时关闭已打开的连接并返回错误。
-// 注意：ctx 仅约束启动 Ping；GORM 初始化时的 SELECT VERSION() 探测由驱动以内部
-// context.Background() 执行，受连接读超时（WithReadTimeout）约束而非 ctx。若需严格超时，
-// 设置合理的 ReadTimeout，或用 WithSkipInitializeWithVersion + WithServerVersion 跳过该探测。
+// ctx 约束启动 Ping 与 SELECT VERSION() 探测（包括等待连接池）；
+// 返回的 Client 不保留启动 ctx，运行期操作请逐次传入 context。
 func (c Config) Open(ctx context.Context) (*Client, error) {
 	driverCfg, err := c.MySQL.driverConfig(c.dsn)
 	if err != nil {
@@ -299,9 +298,8 @@ func (c Config) MustOpen(ctx context.Context) *Client {
 }
 
 // OpenWithDB 包装既有的 *sql.DB：GORM 初始化前会把 Config.Pool 中已设置的连接池参数应用到 sqlDB。
-// 打开成功后 Client.Close 不会关闭该外部 *sql.DB（所有权归调用方）。
-// 但注意：若 GORM 初始化（方言初始化/版本探测 SELECT VERSION()）失败，GORM 会调用 sqlDB.Close() 清理，
-// 因此打开失败后不应再复用传入的 *sql.DB。
+// 初始化成功或失败均不关闭该外部 *sql.DB（所有权归调用方），Client.Close 也不关闭它。
+// ctx 约束启动 Ping 与 SELECT VERSION() 探测。
 // 另注意：本方法不修改 Config.MySQL，而外部 *sql.DB 的真实连接地址由调用方决定，
 // 因此返回 Client 的 Config().MySQL 未必反映其真实 DSN。
 func (c Config) OpenWithDB(ctx context.Context, sqlDB *sql.DB) (*Client, error) {
@@ -323,8 +321,7 @@ func MustOpen(ctx context.Context, opts ...Option) *Client {
 
 // OpenWithDB 包装既有的 *sql.DB：只把 opts 中显式传入的连接池参数应用到 sqlDB，
 // 不强加包内默认（借用的外部连接池由调用方自行配置，未显式覆盖的项保持不变）。
-// 成功打开后 Client.Close 不会关闭该外部 *sql.DB；但注意：若 GORM 初始化失败，
-// GORM 的清理逻辑可能关闭传入的 *sql.DB，失败后请勿再复用它（见 Config.OpenWithDB）。
+// 初始化成功或失败均不关闭外部池，成功后的 Client.Close 也不会关闭它。
 func OpenWithDB(ctx context.Context, sqlDB *sql.DB, opts ...Option) (*Client, error) {
 	// 从无连接池默认的基底出发，仅由 opts 设置池指针，避免覆盖外部 DB 的既有池配置。
 	base := DefaultConfig()
@@ -349,16 +346,17 @@ func (c Config) openWithSQLDB(
 	ownsSQLDB bool,
 	driverCfg *mysqldriver.Config,
 ) (*Client, error) {
+	ctx = normalizeContext(ctx)
 	clone := c.Clone()
 	applyPoolConfig(sqlDB, clone.Pool)
 
 	if clone.StartupPing {
-		if err := pingWithRetry(normalizeContext(ctx), sqlDB, clone); err != nil {
+		if err := pingWithRetry(ctx, sqlDB, clone); err != nil {
 			return nil, fmt.Errorf("ormx: startup ping: %w", err)
 		}
 	}
 
-	gdb, err := gorm.Open(gormmysql.New(clone.dialectorConfig(sqlDB, driverCfg)), clone.gormConfig())
+	gdb, err := openGORM(ctx, sqlDB, clone.dialectorConfig(sqlDB, driverCfg), clone.gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("ormx: initialize gorm: %w", err)
 	}

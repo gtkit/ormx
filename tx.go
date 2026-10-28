@@ -81,6 +81,7 @@ func WithRetryMaxWait(d time.Duration) TxOption {
 // WithTx 在事务中执行 fn：fn 返回 nil 则提交，返回 error 则回滚。
 // 遇到 MySQL 死锁（1213）或锁等待超时（1205）时按带抖动的指数退避自动重试，
 // 重试行为可通过 TxOption 调整；fn 为 nil 时返回错误。
+// 回滚失败时保留回调与回滚两个错误并立即返回，不再重试。
 // 由于会重试，fn 可能被多次调用，必须可重入且幂等（不要依赖闭包外的一次性副作用）。
 // 若 fn 发生 panic，事务会先回滚，随后 panic 继续向上传播（不被吞没为 error），
 // 以保留调用方自身的 panic 处理语义。
@@ -117,11 +118,12 @@ func (c *Client) withTxRetry(
 	// 避免 maxRetries+1 在极大值时整数溢出导致循环零次、静默跳过事务。
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		lastErr = c.execTx(ctx, opts, fn)
+		var retryable bool
+		retryable, lastErr = c.execTx(ctx, opts, fn)
 		if lastErr == nil {
 			return nil
 		}
-		if !isDeadlock(lastErr) {
+		if !retryable {
 			return lastErr
 		}
 		if attempt >= maxRetries {
@@ -162,12 +164,14 @@ func (c *Client) Transaction(ctx context.Context, fn func(tx *gorm.DB) error, tx
 }
 
 // execTx 执行单次事务尝试。ctx 已在 WithTx 入口标准化，必定非 nil。
-func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error) (err error) {
+func (c *Client) execTx(
+	ctx context.Context, opts *sql.TxOptions, fn func(tx *gorm.DB) error,
+) (retryable bool, err error) {
 	txDB := c.db.WithContext(ctx)
 	// GORM 的 Begin 对 nil *sql.TxOptions 与不传参等价，无需分支。
 	tx := txDB.Begin(opts)
 	if tx.Error != nil {
-		return fmt.Errorf("ormx: begin tx: %w", tx.Error)
+		return isDeadlock(tx.Error), fmt.Errorf("ormx: begin tx: %w", tx.Error)
 	}
 
 	defer func() {
@@ -179,15 +183,15 @@ func (c *Client) execTx(ctx context.Context, opts *sql.TxOptions, fn func(tx *go
 
 	if err = fn(tx); err != nil {
 		if rbErr := rollbackError(tx); rbErr != nil {
-			return errors.Join(err, fmt.Errorf("ormx: rollback tx: %w", rbErr))
+			return false, errors.Join(err, fmt.Errorf("ormx: rollback tx: %w", rbErr))
 		}
-		return err
+		return isDeadlock(err), err
 	}
 
 	if err = tx.Commit().Error; err != nil {
-		return fmt.Errorf("ormx: commit tx: %w", err)
+		return isDeadlock(err), fmt.Errorf("ormx: commit tx: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 func rollbackError(tx *gorm.DB) error {

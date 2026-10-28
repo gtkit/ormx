@@ -47,7 +47,7 @@ db := client.DB() // *gorm.DB，直接走 GORM API
 |------|------|
 | `ormx.Open(ctx, opts...)` | 按 Option 构建配置并连接，最常用 |
 | `ormx.MustOpen(ctx, opts...)` | 同上，失败时 panic，适合启动期 wiring |
-| `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（只应用显式传入的池 Option）；打开成功后 `Close()` 不关闭外部 DB，但**初始化失败时 GORM 可能关闭该 DB，失败后勿再复用**（详见 GoDoc） |
+| `ormx.OpenWithDB(ctx, sqlDB, opts...)` | 复用已有 `*sql.DB`（只应用显式传入的池 Option）；初始化成功、失败及 `Client.Close()` 均不关闭外部池，其生命周期由调用方管理 |
 | `ormx.NewConfig(opts...)` / `cfg.With(opts...)` / `cfg.Open(ctx)` | 先构建 `Config` 值再打开，适合多实例复用基础配置（`Config` 是运行期配置，配置文件请由业务侧 DTO 转成 Option，详见 `Config` 的 GoDoc） |
 
 `Config` 通过 `With` / `Clone` 返回隔离副本（仅复制包内可变字段：`SystemVariables` map、连接池与方言指针），不修改原值；注入的 `GORM.Logger`、`HealthProbe`、`TxRetryObserver`、`NamingStrategy.NameReplacer` 与 `Loc` 仍为共享引用。普通赋值（`cfg2 := cfg`）是浅拷贝，需独立副本时用 `Clone`/`With`。`Config.String()`（及 `MySQLConfig.String()`）与 `%v` / `%+v` / `%#v` 输出会把密码、参数值与连接属性脱敏为 `******`，可放心打日志；`cfg.RedactedDSN()` 返回脱敏后的 DSN 字符串。注意：脱敏仅覆盖 `fmt`/`Stringer` 路径，**不要把原始 `Config`/`MySQLConfig` 直接传给结构化日志器（如 `slog.Any`）或用于序列化日志**——请改用 `String()` 或 `RedactedDSN()`。
@@ -61,6 +61,46 @@ base := ormx.NewConfig(
 orders, err := base.With(ormx.WithDatabase("orders"), ormx.WithName("orders")).Open(ctx)
 users, err  := base.With(ormx.WithDatabase("users"), ormx.WithName("users")).Open(ctx)
 ```
+
+### 生产配置示例
+
+以下数值是配置示例，不是容量测量结果。密码由环境或密钥管理系统注入；TLS 使用系统信任根验证服务端证书，私有 CA 应先注册驱动自定义 TLS 配置，并把 `WithTLSConfig` 改为对应名称。
+
+```go
+cfg := ormx.NewConfig(
+    ormx.WithName("orders"),
+    ormx.WithHost("mysql.internal"),
+    ormx.WithPort("3306"),
+    ormx.WithDatabase("orders"),
+    ormx.WithUser("orders_app"),
+    ormx.WithPassword(os.Getenv("DB_PASSWORD")),
+    ormx.WithTLSConfig("true"), // 加密并验证证书与主机名
+    ormx.WithParseTime(true),
+    ormx.WithLocation(time.UTC), // Go 时间解析/编码时区
+    ormx.WithSystemVariable("time_zone", "'+00:00'"), // MySQL 会话时区，SQL 字符串须带引号
+    ormx.WithTimeout(3*time.Second), // 建连超时
+    ormx.WithReadTimeout(5*time.Second), // 单次网络读超时
+    ormx.WithWriteTimeout(5*time.Second), // 单次网络写超时
+    ormx.WithDefaultContextTimeout(2*time.Second), // 无已有 deadline 的 GORM 操作
+    ormx.WithDefaultTransactionTimeout(5*time.Second), // 无已有 deadline 的事务
+    ormx.WithMaxOpenConns(20),
+    ormx.WithMaxIdleConns(10),
+    ormx.WithConnMaxLifetime(3*time.Minute),
+    ormx.WithConnMaxIdleTime(time.Minute),
+)
+startupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+defer cancel()
+client, err := cfg.Open(startupCtx)
+if err != nil {
+    return err
+}
+defer client.Close()
+// 运行期每次使用请求自己的 ctx：client.DB().WithContext(ctx)
+```
+
+`WithLocation` 不会设置 MySQL 的 `@@session.time_zone`，两者需要按时间存储约定配套。`Open`/`OpenWithDB` 的启动 Ping、版本探测及连接池等待均遵循启动 `ctx`；初始化完成后不保留该 `ctx`。查询和事务已有 deadline 时，GORM 默认超时不会覆盖它；网络超时也不等于整个事务的总预算。
+
+连接预算按所有实例的总和计算：`Σ(实例数 × 每实例 MaxOpenConns) + 其他客户端连接 + 运维预留 ≤ MySQL max_connections`。连接寿命与空闲回收应结合数据库、代理关闭策略和 `StatsSnapshot` 调整，不能直接把示例参数作为线上结论。需要 SQL 日志时用下文 `zlogger.Use` 显式注入。
 
 ### 选项函数
 
@@ -201,6 +241,7 @@ err := client.Transaction(ctx, func(tx *gorm.DB) error {
 
 - `fn` 返回 nil 则提交，返回 error 则回滚；panic 时回滚后继续抛出。
 - 遇到 MySQL 死锁（1213）或锁等待超时（1205）时自动按带抖动的指数退避重试，**默认最多 3 次**。重试意味着 `fn` 可能执行多次，事务内逻辑须幂等。
+- 回调失败且回滚也失败时立即返回，保留两者的错误链，不再重试或发出重试事件；提交失败不会仅因普通网络或 context 错误自动重放事务。
 - 需要指定隔离级别/只读时用 `WithTx(ctx, &sql.TxOptions{...}, fn)`（`Transaction` 等价于 `WithTx(ctx, nil, fn)`）；`WithReadTx(ctx, fn)` 是 `ReadOnly: true` 的便捷形式。
 
 每次调用可用 `TxOption` 覆盖重试行为：
@@ -237,12 +278,22 @@ if !report.Healthy() {
     log.Printf("db down: %v", report.Error)
 }
 
-s := client.StatsSnapshot()
-// gauge 类（当前值）：OpenConnections / InUse / Idle / Utilization ...
-openConns.Set(float64(s.OpenConnections))
-// counter 类（累计值，用 Counter 而非 Gauge）：WaitCount / MaxIdleClosed / MaxLifetimeClosed ...
-waitCountTotal.Add(float64(s.WaitCount))
+// previousWaitCount 与 Client 同生命周期，放在采集循环外；同一实例串行采集。
+var previousWaitCount int64
+collect := func() {
+    s := client.StatsSnapshot()
+    openConns.Set(float64(s.OpenConnections)) // gauge：当前值
+    delta := s.WaitCount - previousWaitCount
+    if delta < 0 {
+        delta = s.WaitCount // 连接池重建后累计值归零，按新池计算
+    }
+    waitCountTotal.Add(float64(delta)) // Counter.Add 只接收本次增量
+    previousWaitCount = s.WaitCount
+}
+// 在已有采集循环中调用 collect()
 ```
+
+`WaitCount`、`WaitDuration`、`MaxIdleClosed`、`MaxIdleTimeClosed`、`MaxLifetimeClosed` 都是底层池的累计值。采用可观察 Counter/累计值采集回调时直接暴露当前累计值；采用 `Counter.Add` 时必须计算增量。切换 `Client` 实例时主动重置对应基线（即使新池计数更大也要重置），按实例分别保存采集状态。
 
 `WithHealthProbe` 可在 Ping 之外追加业务探针，例如执行一次轻量查询确认连接可用：
 
@@ -314,7 +365,7 @@ zlogger.Use(zlog.With(zap.String("database", "orders"))),
 | `WithLogLevel(level)` | `gormlogger.Warn` | 日志级别（Silent / Error / Warn / Info） |
 | `WithSlowThreshold(d)` | `200ms` | 慢查询阈值；执行耗时超过即按 Warn 输出 `gorm slow query`，设为 `0` 关闭慢查询日志 |
 | `WithIgnoreRecordNotFoundError(enabled)` | `false` | 忽略 `gorm.ErrRecordNotFound`，不作为错误日志输出 |
-| `WithParameterizedQueries(enabled)` | `true`（安全默认） | 开启时日志中的 SQL 不带参数值（脱敏），只输出占位符语句；调试需要看真实参数值时显式传 `false` 关闭 |
+| `WithParameterizedQueries(enabled)` | `true`（安全默认） | 隐藏 SQL 绑定参数及 Trace 的原始错误详情；调试需要看原始 SQL 参数/错误时显式传 `false` 关闭 |
 | `WithTraceIDExtractor(fn)` | 无 | 从 context 提取 trace/request id，附加为 `trace_id` 字段，串联 SQL 日志与请求链路 |
 
 ### 输出行为
@@ -324,6 +375,8 @@ zlogger.Use(zlog.With(zap.String("database", "orders"))),
 1. 执行出错（且未被 RecordNotFound 忽略）→ `Error` 级 `gorm query error`，附 `error` 字段
 2. 耗时超过慢查询阈值 → `Warn` 级 `gorm slow query`，附 `slow_threshold` 字段
 3. 日志级别为 Info → `Info` 级 `gorm query`（全量 SQL 日志，仅建议开发环境开启）
+
+参数化模式下 `error` 为固定安全摘要；MySQL 错误另带 `mysql_code` 和非空 `mysql_sqlstate`，避免重复键等错误把邮箱、Token 回显到日志。该处理不会改变返回给调用方的错误。原始 SQL 中直接拼接的字面量及调用方自行输出的非 SQL 消息不属于绑定参数过滤范围，业务代码仍须使用占位符。
 
 GORM 经 Info / Warn / Error 输出的非 SQL 消息（初始化失败、迁移警告、回调注册等）同样附带 `source` 与 `trace_id`，`source` 指向触发该操作的业务代码位置。
 
@@ -410,14 +463,14 @@ page, err := paginator.Paginate[Topic](
 | 写法 | GORM Count 生成 | 总数 | 本包行为 |
 |------|----------------|------|---------|
 | **单列** `.Distinct("col")` | `count(DISTINCT col)` | 排除 NULL，可能比 `SELECT DISTINCT col` 少 1 | 返回 `ErrTotalRequired` |
-| `.Group("col")` / `clause.GroupBy` | `count(*) … GROUP BY`，取返回行数（`*count = tx.RowsAffected`） | 分组数量，准确 | 自动统计 |
+| `.Group("col")` / `clause.GroupBy` | `SELECT count(*) FROM (保留原投影、GROUP BY、HAVING 的子查询) AS ormx_groups` | 满足 HAVING 的分组数 | 自动统计，支持投影别名 |
 | **多列** `.Distinct("a","b")` / `.Distinct().Select("a, b")` | `count(*)` | **总行数，非去重数** | 返回 `ErrTotalRequired` |
 | `Clauses(clause.Select{Distinct: true})` | `count(*)` | **总行数，非去重数** | 返回 `ErrTotalRequired` |
 | 原始字符串 `Select("DISTINCT …")` / `Select("DISTINCTROW …")` | `count(*)` | **总行数，非去重数** | 返回 `ErrTotalRequired` |
 
 即使 GORM 生成了 `count(DISTINCT col)`，它也不能证明分页总数可靠：MySQL 的 Count 排除 NULL，而数据查询会保留一个 NULL。实测可空列有 5 个非空去重值和 1 个 NULL 时，Count 返回 **5**、数据投影返回 **6**。多列 `Distinct("name", "`order`")` 又会退化为 `count(*)`（25 行 / 15 个去重组合时返回 25）。因此本包对所有 DISTINCT 统一 fail-closed，必须传入准确的 `WithTotal`。
 
-> **GROUP BY 自动统计的代价**：统计查询每个分组返回一行，开销为 O(分组数) 的网络传输与扫描。高基数分组（几十万以上）请改用 `WithTotal` 自行统计。
+GROUP BY 自动统计保留投影别名，因此 `Select("category_id, COUNT(*) AS n").Group("category_id").Having("n > ?", 1)` 和按表达式别名分组均可用。统计 SQL 只返回一个总数，数据库仍须完成内部聚合；实际代价由索引、分组数量与执行计划决定，重查询可用 `WithTotal` 提供已有总数。
 
 > **写在 `Scopes` 里的 `Select`/`Distinct`/`Group` 会在 SQL 执行前被投影快照拦下**（返回 `ErrDeferredPaginationClause`，见上表）。原始字符串前的空白、`/* ... */`、`-- ...`、`# ...` 注释及优化器 hint 会先被跳过，再识别 `DISTINCT`/`DISTINCTROW`。
 
@@ -439,3 +492,9 @@ page, err := paginator.Paginate[Topic](
 make test-integration                                   # 默认 root:@tcp(127.0.0.1:3306)/
 make test-integration ORM_TEST_DSN='user:pass@tcp(host:3306)/'
 ```
+
+### GORM 兼容性验证
+
+`go.mod` 锁定 GORM v1.31.2，本地依赖版本保持不变。CI 的集成作业分别使用锁定版本和 `gorm.io/gorm@latest`，两者都运行完整单元测试及带 `integration` 标签的 MySQL 契约，任一失败均阻断对应作业；缺少 DSN 或集成运行开关时明确失败。
+
+分页器依赖 GORM 的 Statement、Scope 执行顺序和 Count 行为，升级前应核对两个作业的真实结果，重点包括分组别名、延迟 Scope 防护、原句柄复用、初始化取消、借用连接池与预编译事务。配置了矩阵不等于某个新版本已经验证；本次本地验证版本与结果见实施记录。

@@ -122,10 +122,8 @@ func (s *scriptStmt) Query(args []driver.Value) (driver.Rows, error) {
 		if s.state.countEr != nil {
 			return nil, s.state.countEr
 		}
-		// 分组统计在真实数据库中每个分组返回一行；GORM 的 Count 对带 GROUP BY 的语句
-		// 一律用 *count = tx.RowsAffected（gorm@v1.31.2 finisher_api.go）覆盖扫描值，
-		// 所以替身必须返回 total 行，否则 total 恒为 1，与真实语义不符。
-		if isGroupedQuery(s.query) {
+		// 直接 GORM Count + GROUP BY 返回每组一行；派生表外层 Count 则只返回总数一行。
+		if isGroupedQuery(s.query) && !strings.Contains(strings.ToUpper(s.query), "FROM (SELECT ") {
 			values := make([][]driver.Value, 0, s.state.total)
 			for range s.state.total {
 				values = append(values, []driver.Value{int64(1)})

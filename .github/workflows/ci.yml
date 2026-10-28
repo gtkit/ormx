@@ -57,6 +57,11 @@ jobs:
   integration:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        gorm: [locked, latest]
+
     services:
       mysql:
         image: mysql:8.4
@@ -79,8 +84,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run Integration Tests
+      - name: Select Latest GORM For Compatibility Check
+        if: matrix.gorm == 'latest'
+        run: go get gorm.io/gorm@latest
+
+      - name: Run Unit And Integration Contracts
         env:
           ORM_RUN_INTEGRATION: "1"
+          ORM_REQUIRE_INTEGRATION: "1"
           ORM_TEST_DSN: root:root@tcp(127.0.0.1:3306)/
-        run: go test -run Integration ./...
+        run: go test -vet=off -tags integration -count=1 -timeout=5m ./...

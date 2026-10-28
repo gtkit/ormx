@@ -660,6 +660,58 @@ func TestWithTxRollbackErrorJoinedWithBusinessError(t *testing.T) {
 	}
 }
 
+func TestWithTxRollbackFailureStopsRetry(t *testing.T) {
+	for _, code := range []uint16{mysqlErrDeadlock, mysqlErrLockWait} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			var state *stubDBState
+			client := newStubClient(t, &state)
+			rollbackErr := errors.New("rollback failed")
+			state.rollbackErr = rollbackErr
+			mysqlErr := &mysqldriver.MySQLError{Number: code}
+			calls, events := 0, 0
+			client.config.TxRetryObserver = func(context.Context, TxRetryEvent) { events++ }
+
+			err := client.Transaction(t.Context(), func(*gorm.DB) error {
+				calls++
+				if calls == 1 {
+					return mysqlErr
+				}
+				return nil
+			}, WithRetryBaseWait(time.Nanosecond))
+			if !errors.Is(err, mysqlErr) || !errors.Is(err, rollbackErr) {
+				t.Fatalf("both failure causes must survive: %v", err)
+			}
+			if calls != 1 || events != 0 || state.beginCount.Load() != 1 || state.rollbackCount.Load() != 1 {
+				t.Fatalf("calls=%d events=%d begins=%d rollbacks=%d", calls, events,
+					state.beginCount.Load(), state.rollbackCount.Load())
+			}
+		})
+	}
+}
+
+func TestWithTxCallbackDeadlockRetriesAfterRollback(t *testing.T) {
+	for _, code := range []uint16{mysqlErrDeadlock, mysqlErrLockWait} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			var state *stubDBState
+			client := newStubClient(t, &state)
+			calls := 0
+			err := client.Transaction(t.Context(), func(*gorm.DB) error {
+				calls++
+				if calls == 1 {
+					return &mysqldriver.MySQLError{Number: code}
+				}
+				return nil
+			}, WithRetryBaseWait(time.Nanosecond))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 || state.rollbackCount.Load() != 1 || state.commitCount.Load() != 1 {
+				t.Fatalf("calls=%d rollbacks=%d commits=%d", calls, state.rollbackCount.Load(), state.commitCount.Load())
+			}
+		})
+	}
+}
+
 func TestWithTxPanicRollsBackAndRepanics(t *testing.T) {
 	var state *stubDBState
 	client := newStubClient(t, &state)

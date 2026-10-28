@@ -48,8 +48,9 @@ func WithIgnoreRecordNotFoundError(enabled bool) Option {
 	}
 }
 
-// WithParameterizedQueries 设置是否以参数化形式记录 SQL：开启后 ParamsFilter 会丢弃绑定参数，日志中不出现真实参数值。
-// 默认开启（安全优先，避免密码、Token 等敏感绑定值进入日志）；仅在调试需要看真实参数值时显式传 false 关闭。
+// WithParameterizedQueries 设置是否以参数化形式记录 SQL：开启后隐藏绑定参数与 Trace 原始错误详情，
+// MySQL 错误保留编号和 SQLSTATE。默认开启；仅在受控调试需要真实参数与错误详情时传 false。
+// 直接写入 SQL 字符串的字面量不在过滤范围内，调用方仍需使用参数占位符。
 func WithParameterizedQueries(enabled bool) Option {
 	return func(l *gormLogger) {
 		l.parameterizedQueries = enabled

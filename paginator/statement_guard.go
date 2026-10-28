@@ -13,6 +13,7 @@ type statementGuardMode uint8
 const (
 	guardData statementGuardMode = iota
 	guardCount
+	guardGroupedCount
 )
 
 // statementGuard 在 GORM 执行完全部 scope、构建 SQL 之前校验最终语句，
@@ -43,13 +44,17 @@ func (g *statementGuard) ModifyStatement(stmt *gorm.Statement) {
 		intact = paginationIntact(stmt, g.limit, g.offset) &&
 			orderIntact(stmt, g.order, g.projection.restricted) &&
 			g.projection.dataIntact(stmt)
-	case guardCount:
+	case guardCount, guardGroupedCount:
 		orderSafe := countOrderSafe(stmt)
 		delete(stmt.Clauses, orderByClauseName)
 		intact = paginationIntact(stmt, noLimit, 0) &&
 			orderSafe &&
-			g.projection.countShapeIntact(stmt) &&
-			g.countSelect.equal(snapshotClause(stmt, selectClauseName))
+			g.projection.countShapeIntact(stmt)
+		if g.mode == guardGroupedCount {
+			intact = intact && g.projection.dataIntact(stmt)
+		} else {
+			intact = intact && g.countSelect.equal(snapshotClause(stmt, selectClauseName))
+		}
 	}
 	if !intact {
 		_ = stmt.AddError(ErrDeferredPaginationClause)

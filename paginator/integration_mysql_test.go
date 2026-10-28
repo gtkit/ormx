@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 	gormmysql "gorm.io/driver/mysql"
@@ -31,7 +32,6 @@ const (
 	// integrationRequireEnv 置 1 时，缺少运行条件不再 skip 而是 fail——
 	// 发版守卫用它防止"集成测试被静默跳过却照常打 tag"。
 	integrationRequireEnv = "ORM_REQUIRE_INTEGRATION"
-	integrationSchema     = "ormx_paginator_it"
 )
 
 type itWidget struct {
@@ -103,12 +103,19 @@ func newIntegrationDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("连接 MySQL 失败: %v", err)
 	}
-	if err := admin.Exec("DROP DATABASE IF EXISTS " + integrationSchema).Error; err != nil {
-		t.Fatalf("DROP DATABASE: %v", err)
-	}
+	// 每次只清理本次新建的库，避免并行 CI 或本机已有同名库被覆盖。
+	integrationSchema := fmt.Sprintf("ormx_paginator_it_%d", time.Now().UnixNano())
 	if err := admin.Exec("CREATE DATABASE " + integrationSchema).Error; err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := admin.Exec("DROP DATABASE " + integrationSchema).Error; err != nil {
+			t.Errorf("清理测试库: %v", err)
+		}
+		if sqlDB, err := admin.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
 
 	schemaCfg := *cfg
 	schemaCfg.DBName = integrationSchema
@@ -118,10 +125,6 @@ func newIntegrationDB(t *testing.T) *gorm.DB {
 	}
 	t.Cleanup(func() {
 		if sqlDB, err := db.DB(); err == nil {
-			_ = sqlDB.Close()
-		}
-		_ = admin.Exec("DROP DATABASE IF EXISTS " + integrationSchema).Error
-		if sqlDB, err := admin.DB(); err == nil {
 			_ = sqlDB.Close()
 		}
 	})
@@ -361,8 +364,8 @@ func TestIntegrationNullableDistinctCountMismatch(t *testing.T) {
 }
 
 // TestIntegrationGroupByProjection GROUP BY 查询（sql_mode 含 ONLY_FULL_GROUP_BY）：
-// 自动 tiebreaker 会被拒绝，故要求显式排序列；总数则可自动统计——GORM 对 GROUP BY
-// 取统计查询的返回行数（*count = tx.RowsAffected），即分组数量。
+// 自动 tiebreaker 会被拒绝，故要求显式排序列；以下先核对直接 GORM Count 基线，
+// 再验证分页器通过派生表得到相同分组总数。
 func TestIntegrationGroupByProjection(t *testing.T) {
 	db := newIntegrationDB(t)
 
@@ -401,6 +404,55 @@ func TestIntegrationGroupByProjection(t *testing.T) {
 	if last.CurrentPage != 2 || len(last.Items) != 2 {
 		t.Fatalf("末页 page=%d items=%d, want 2/2", last.CurrentPage, len(last.Items))
 	}
+}
+
+func TestIntegrationGroupedAliases(t *testing.T) {
+	db := newIntegrationDB(t)
+	t.Run("having alias with bindings", func(t *testing.T) {
+		type row struct {
+			Name string
+			N    int64
+		}
+		query := db.Model(&itWidget{}).Select("name, COUNT(*) AS n").
+			Where("name <> ?", "n04").Group("name").Having("n > ?", 4)
+		page, err := Paginate[row](query, Params{Page: 2, PageSize: 2, Sort: "name"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.TotalCount != 4 || page.TotalPage != 2 || len(page.Items) != 2 ||
+			page.Items[0].Name != "n02" || page.Items[1].Name != "n03" || page.Items[0].N != 5 {
+			t.Fatalf("wrong grouped page: %+v", page)
+		}
+	})
+	t.Run("group expression alias", func(t *testing.T) {
+		type row struct {
+			Bucket int64
+			N      int64
+		}
+		query := db.Model(&itWidget{}).Select("MOD(`order`, 2) AS bucket, COUNT(*) AS n").
+			Group("bucket").Having("n >= ?", 8)
+		page, err := Paginate[row](query, Params{PageSize: 10}, WithDefaultSort("bucket"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.TotalCount != 2 || len(page.Items) != 2 || page.Items[0].Bucket != 0 || page.Items[1].Bucket != 1 {
+			t.Fatalf("wrong expression groups: %+v", page)
+		}
+	})
+	t.Run("empty groups", func(t *testing.T) {
+		query := db.Model(&itWidget{}).Select("name, COUNT(*) AS n").Group("name").Having("n > ?", 100)
+		page, err := Paginate[itWidget](query, Params{Sort: "name"})
+		if err != nil || page.TotalCount != 0 || page.Items == nil || len(page.Items) != 0 {
+			t.Fatalf("empty groups: page=%+v err=%v", page, err)
+		}
+	})
+	t.Run("model primary key is not a destination filter", func(t *testing.T) {
+		query := db.Model(&itWidget{ID: 999}).Select("name, COUNT(*) AS n").Group("name")
+		page, err := Paginate[itWidget](query, Params{Sort: "name"})
+		if err != nil || page.TotalCount != 5 || len(page.Items) != 5 {
+			t.Fatalf("model primary key changed grouped total: page=%+v err=%v", page, err)
+		}
+	})
 }
 
 // TestIntegrationNestedScopeOverride 嵌套 scope 覆盖本包分页子句：真实数据库上
@@ -595,6 +647,10 @@ func TestIntegrationTableAlias(t *testing.T) {
 	}
 
 	// 库名限定形式 db.table：GORM 将 Statement.Table 置为表名，限定后仍可解析
+	var integrationSchema string
+	if err := db.Raw("SELECT DATABASE()").Scan(&integrationSchema).Error; err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Paginate[itWidget](db.Table(integrationSchema+".it_widgets"),
 		Params{PageSize: 5, Sort: "name"}); err != nil {
 		t.Fatalf("库名限定表形式: %v", err)
