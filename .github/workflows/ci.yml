@@ -18,7 +18,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.10'
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
@@ -82,7 +82,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.10'
 
       - name: Select Latest GORM For Compatibility Check
         if: matrix.gorm == 'latest'
